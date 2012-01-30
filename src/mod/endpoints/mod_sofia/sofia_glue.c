@@ -484,6 +484,12 @@ void sofia_glue_set_local_sdp(private_object_t *tech_pvt, const char *ip, switch
 					"%s",
 					username, tech_pvt->owner_id, tech_pvt->session_id, family, ip, username, family, ip, srbuf);
 
+#ifdef ENABLE_MSRP
+	if (sofia_test_flag(tech_pvt, TFLAG_MSRP)) {
+		goto msrp;
+	}
+#endif
+
 	if (tech_pvt->rm_encoding) {
 		switch_snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), "m=audio %d RTP/%sAVP", 
 						port, (!zstr(tech_pvt->local_crypto_key) && sofia_test_flag(tech_pvt, TFLAG_SECURE)) ? "S" : "");
@@ -716,6 +722,42 @@ void sofia_glue_set_local_sdp(private_object_t *tech_pvt, const char *ip, switch
 	}
 
 
+#ifdef ENABLE_MSRP
+msrp:
+	if (sofia_test_flag(tech_pvt, TFLAG_MSRP)) {
+
+		if (tech_pvt->msrp_session && !zstr(tech_pvt->msrp_session->remote_path)) {
+			switch_snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf),
+				"m=message %d TCP/MSRP *\n"
+				"a=path:msrp://%s:%d/%s;tcp\n"
+				"a=accept-types:%s\n"
+				"a=accept-wrapped-types:%s\n"
+				"a=setup:passive\n",
+				tech_pvt->msrp_session->local_port,
+				tech_pvt->rtpip, tech_pvt->msrp_session->local_port, tech_pvt->msrp_session->call_id,
+				tech_pvt->msrp_session->local_accept_types,
+				tech_pvt->msrp_session->local_accept_wrapped_types);
+		} else {
+			char *uuid = switch_core_session_get_uuid(tech_pvt->session);
+			const char *file_selector = switch_channel_get_variable(tech_pvt->channel, "sip_msrp_local_file_selector");
+
+			switch_snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf),
+				"m=message %d TCP/MSRP *\n"
+				"a=path:msrp://%s:%d/%s;tcp\n"
+				"a=accept-types:message/cpim text/* application/im-iscomposing+xml\n"
+				"a=accept-wrapped-types:*\n"
+				"a=setup:passive\n",
+				8044,
+				tech_pvt->rtpip, 8044, uuid);
+
+			if (!zstr(file_selector)) {
+				switch_snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf),
+					"a=sendonly\na=file-selector:%s\n", file_selector);
+			}
+		}
+	}
+#endif
+
 	if (map) {
 		switch_event_destroy(&map);
 	}
@@ -796,7 +838,6 @@ void sofia_glue_tech_prepare_codecs(private_object_t *tech_pvt)
 	} else {
 		tech_pvt->num_codecs = switch_loadable_module_get_codecs(tech_pvt->codecs, sizeof(tech_pvt->codecs) / sizeof(tech_pvt->codecs[0]));
 	}
-
 
 }
 
@@ -2745,6 +2786,113 @@ void sofia_glue_deactivate_rtp(private_object_t *tech_pvt)
 
 }
 
+#ifdef ENABLE_MSRP
+switch_status_t sofia_glue_activate_msrp(private_object_t *tech_pvt, sdp_media_t *m)
+{
+	msrp_session_t *msrp_session = NULL;
+	sdp_attribute_t *attr;
+	int port = 8044;
+
+switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "activate msrp\n");
+
+	if (tech_pvt->msrp_session) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "MSRP session already activated for this session\n");
+		return SWITCH_STATUS_SUCCESS;
+	}
+
+	/* Create a new msrp_session */
+	msrp_session = msrp_session_new(switch_core_session_get_pool(tech_pvt->session));
+	if(!msrp_session) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "MSRP session create error\n");
+		return SWITCH_STATUS_FALSE;
+	}
+	tech_pvt->msrp_session = msrp_session;
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "MSRP session created\n");
+	
+	for (attr = m->m_attributes; attr; attr = attr->a_next) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "[%s]=[%s]\n", attr->a_name, attr->a_value);
+		if (!strcasecmp(attr->a_name, "path") && attr->a_value) {
+			msrp_session->remote_path = switch_core_session_strdup(tech_pvt->session, attr->a_value);
+			switch_channel_set_variable(tech_pvt->channel, "sip_msrp_remote_path", attr->a_value);
+		} else if (!strcasecmp(attr->a_name, "accept-types") && attr->a_value) {
+			msrp_session->remote_accept_types = switch_core_session_strdup(tech_pvt->session, attr->a_value);
+			switch_channel_set_variable(tech_pvt->channel, "sip_msrp_remote_accept_types", attr->a_value);
+		} else if (!strcasecmp(attr->a_name, "accept-wrapped-types") && attr->a_value) {
+			msrp_session->remote_accept_wrapped_types = switch_core_session_strdup(tech_pvt->session, attr->a_value);
+			switch_channel_set_variable(tech_pvt->channel, "sip_msrp_remote_accept_wrapped_types", attr->a_value);
+		} else if (!strcasecmp(attr->a_name, "setup") && attr->a_value) {
+			msrp_session->remote_setup = switch_core_session_strdup(tech_pvt->session, attr->a_value);
+			switch_channel_set_variable(tech_pvt->channel, "sip_msrp_remote_setup", attr->a_value);
+		} else if (!strcasecmp(attr->a_name, "file-selector") && attr->a_value) {
+			char *tmp = switch_mprintf("%s", attr->a_value);
+			char *argv[4] = { 0 };
+			int argc;
+			int i;
+
+			msrp_session->remote_file_selector = switch_core_session_strdup(tech_pvt->session, attr->a_value);
+			switch_channel_set_variable(tech_pvt->channel, "sip_msrp_remote_file_selector", attr->a_value);
+
+			argc = switch_separate_string(tmp, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
+
+			for(i = 0; i<argc; i++) {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "::::%s\n", switch_str_nil(argv[i]));
+				if (zstr(argv[i])) {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "ERRRRRRR\n");
+					continue;
+				}
+				if (!strncasecmp(argv[i], "name:", 5)) {
+					char *p = argv[i] + 5;
+					int len = strlen(p);
+
+					if (*p == '"') {
+						*(p + len - 1) = '\0';
+						p++;
+					}
+					switch_channel_set_variable(tech_pvt->channel, "sip_msrp_file_name", p);
+				} else if (!strncasecmp(argv[i], "type:", 5)) {
+					switch_channel_set_variable(tech_pvt->channel, "sip_msrp_file_type", argv[i] + 5);
+				}
+				if (!strncasecmp(argv[i], "size:", 5)) {
+					switch_channel_set_variable(tech_pvt->channel, "sip_msrp_file_size", argv[i] + 5);
+				}
+				if (!strncasecmp(argv[i], "hash:", 5)) {
+					switch_channel_set_variable(tech_pvt->channel, "sip_msrp_file_hash", argv[i] + 5);
+				}
+			}
+			switch_safe_free(tmp);
+		} else if (!strcasecmp(attr->a_name, "file-transfer-id") && attr->a_value) {
+			switch_channel_set_variable(tech_pvt->channel, "sip_msrp_file_transfer_id", attr->a_value);
+		} else if (!strcasecmp(attr->a_name, "file-disposition") && attr->a_value) {
+			switch_channel_set_variable(tech_pvt->channel, "sip_msrp_file_disposition", attr->a_value);
+		} else if (!strcasecmp(attr->a_name, "file-date") && attr->a_value) {
+			switch_channel_set_variable(tech_pvt->channel, "sip_msrp_file_date", attr->a_value);
+		} else if (!strcasecmp(attr->a_name, "file-icon") && attr->a_value) {
+			switch_channel_set_variable(tech_pvt->channel, "sip_msrp_file_icon", attr->a_value);
+		} else if (!strcasecmp(attr->a_name, "file-range") && attr->a_value) {
+			switch_channel_set_variable(tech_pvt->channel, "sip_msrp_file_range", attr->a_value);
+		}
+	}
+	msrp_session->call_id = switch_core_session_get_uuid(tech_pvt->session);
+	msrp_session->local_port = port;
+	msrp_session->local_accept_types = msrp_session->remote_accept_types;
+	msrp_session->local_accept_wrapped_types = msrp_session->remote_accept_types;
+	msrp_session->local_setup = msrp_session->remote_setup;
+	return SWITCH_STATUS_SUCCESS;
+}
+
+void sofia_glue_deactivate_msrp(private_object_t *tech_pvt)
+{
+	if (tech_pvt->msrp_session) {
+		if(msrp_session_destroy(tech_pvt->msrp_session) != SWITCH_STATUS_SUCCESS) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Error destroy MSRP endpoint");
+		} else {
+			tech_pvt->msrp_session = NULL;
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "MSRP endpoint destroyed");
+		}
+	}
+}
+#endif
+
 switch_status_t sofia_glue_tech_set_video_codec(private_object_t *tech_pvt, int force)
 {
 
@@ -2820,6 +2968,13 @@ switch_status_t sofia_glue_tech_set_codec(private_object_t *tech_pvt, int force)
 {
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
 	int resetting = 0;
+
+#ifdef ENABLE_MSRP
+	if (sofia_test_flag(tech_pvt, TFLAG_MSRP)) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "MSRP codec path:%s\n", tech_pvt->msrp_session->remote_path);
+		return status;
+	}
+#endif
 
 	if (!tech_pvt->iananame) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(tech_pvt->session), SWITCH_LOG_ERROR, "No audio codec available\n");
@@ -3934,11 +4089,16 @@ switch_status_t sofia_glue_tech_media(private_object_t *tech_pvt, const char *r_
 	}
 
 	if ((match = sofia_glue_negotiate_sdp(tech_pvt->session, r_sdp))) {
-		if (sofia_glue_tech_choose_port(tech_pvt, 0) != SWITCH_STATUS_SUCCESS) {
-			return SWITCH_STATUS_FALSE;
-		}
-		if (sofia_glue_activate_rtp(tech_pvt, 0) != SWITCH_STATUS_SUCCESS) {
-			return SWITCH_STATUS_FALSE;
+
+		if (sofia_test_flag(tech_pvt, TFLAG_MSRP)) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Starting endpoint\n");
+		} else {
+			if (sofia_glue_tech_choose_port(tech_pvt, 0) != SWITCH_STATUS_SUCCESS) {
+				return SWITCH_STATUS_FALSE;
+			}
+			if (sofia_glue_activate_rtp(tech_pvt, 0) != SWITCH_STATUS_SUCCESS) {
+				return SWITCH_STATUS_FALSE;
+			}
 		}
 		switch_channel_set_variable(tech_pvt->channel, SWITCH_ENDPOINT_DISPOSITION_VARIABLE, "EARLY MEDIA");
 		sofia_set_flag_locked(tech_pvt, TFLAG_EARLY_MEDIA);
@@ -4476,8 +4636,21 @@ uint8_t sofia_glue_negotiate_sdp(switch_core_session_t *session, const char *r_s
 			got_avp++;
 		} else if (m->m_proto == sdp_proto_udptl) {
 			got_udptl++;
+		} else if (m->m_proto == sdp_proto_msrp || m->m_proto == sdp_proto_msrps){
+			got_msrp++;
 		}
 
+#ifdef ENABLE_MSRP
+		if(got_msrp && m->m_type == sdp_media_message)
+		{
+			sofia_set_flag(tech_pvt, TFLAG_MSRP),
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "got msrp\n");
+			if (sofia_glue_activate_msrp(tech_pvt, m) == SWITCH_STATUS_SUCCESS) {
+				match = 1;
+			}
+			goto done;
+		}
+#endif
 		if (got_udptl && m->m_type == sdp_media_image && m->m_port) {
 			switch_t38_options_t *t38_options = tech_process_udptl(tech_pvt, sdp, m);
 

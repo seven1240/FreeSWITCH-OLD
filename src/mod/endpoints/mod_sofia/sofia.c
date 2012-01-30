@@ -1947,6 +1947,7 @@ void *SWITCH_THREAD_FUNC sofia_profile_thread_run(switch_thread_t *thread, void 
 				   TAG_IF(profile->pres_type, NUTAG_ALLOW("SUBSCRIBE")),
 				   TAG_IF(profile->pres_type, NUTAG_ENABLEMESSAGE(1)),
 				   TAG_IF(profile->pres_type, NUTAG_ALLOW_EVENTS("presence")),
+				   TAG_IF(profile->pres_type, NUTAG_ALLOW_EVENTS("reg")),
 				   TAG_IF((profile->pres_type || sofia_test_pflag(profile, PFLAG_MANAGE_SHARED_APPEARANCE)), NUTAG_ALLOW_EVENTS("dialog")),
 				   TAG_IF((profile->pres_type || sofia_test_pflag(profile, PFLAG_MANAGE_SHARED_APPEARANCE)), NUTAG_ALLOW_EVENTS("line-seize")),
 				   TAG_IF(profile->pres_type, NUTAG_ALLOW_EVENTS("call-info")),
@@ -6210,6 +6211,11 @@ static void sofia_handle_sip_i_state(switch_core_session_t *session, int status,
 					}
 
 					sofia_set_flag_locked(tech_pvt, TFLAG_ANS);
+
+					if (sofia_test_flag(tech_pvt, TFLAG_MSRP)) {
+						switch_channel_mark_answered(channel);
+						goto done;
+					}
 
 					if (match) {
 						if (sofia_glue_tech_choose_port(tech_pvt, 0) == SWITCH_STATUS_SUCCESS) {

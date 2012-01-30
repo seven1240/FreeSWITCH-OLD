@@ -53,6 +53,11 @@
 #define HAVE_FUNC 1
 #endif
 
+#define ENABLE_MSRP
+#ifdef ENABLE_MSRP
+#include "msrp.h"
+#endif
+
 #define MAX_CODEC_CHECK_FRAMES 50
 #define MAX_MISMATCH_FRAMES 5
 #define MODNAME "mod_sofia"
@@ -329,6 +334,7 @@ typedef enum {
 	TFLAG_LIBERAL_DTMF,
 	TFLAG_GOT_ACK,
 	TFLAG_CAPTURE,
+	TFLAG_MSRP,
 	/* No new flags below this line */
 	TFLAG_MAX
 } TFLAGS;
@@ -797,6 +803,10 @@ struct private_object {
 	switch_payload_t ianacodes[SWITCH_MAX_CODECS];
 	uint32_t session_timeout;
 	enum nua_session_refresher session_refresher;
+#ifdef ENABLE_MSRP
+	/** MSRP **/
+	msrp_session_t *msrp_session;
+#endif
 };
 
 struct callback_t {
@@ -863,6 +873,10 @@ void sofia_glue_global_standby(switch_bool_t on);
 switch_status_t sofia_glue_activate_rtp(private_object_t *tech_pvt, switch_rtp_flag_t myflags);
 
 void sofia_glue_deactivate_rtp(private_object_t *tech_pvt);
+
+switch_status_t sofia_glue_activate_msrp(private_object_t *tech_pvt, sdp_media_t *m);
+
+void sofia_glue_deactivate_msrp(private_object_t *tech_pvt);
 
 void sofia_glue_set_local_sdp(private_object_t *tech_pvt, const char *ip, switch_port_t port, const char *sr, int force);
 
