@@ -910,6 +910,360 @@ switch_status_t msrp_send(switch_socket_t *sock, msrp_msg_t *msrp_msg)
 	return switch_socket_send(sock, buf, &len);
 }
 
+SWITCH_STANDARD_APP(msrp_echo_function)
+{
+	msrp_session_t *msrp_session = NULL;
+	msrp_msg_t *msrp_msg = NULL;
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+	private_object_t *tech_pvt = switch_core_session_get_private(session);
+
+	if (!tech_pvt) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "No tech_pvt!\n");
+		return;
+	}
+
+	if(!tech_pvt->msrp_session) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "No msrp_session!\n");
+		return;
+	}
+
+	while (switch_channel_ready(channel) && (msrp_session = tech_pvt->msrp_session)) {
+		if ((msrp_msg = msrp_session_pop_msg(msrp_session)) == NULL) {
+			switch_yield(100000);
+			continue;
+		}
+
+		if (msrp_msg->method == MSRP_METHOD_SEND) { /*echo back*/
+			char *p;
+			p = msrp_msg->headers[MSRP_H_TO_PATH];
+			msrp_msg->headers[MSRP_H_TO_PATH] = msrp_msg->headers[MSRP_H_FROM_PATH];
+			msrp_msg->headers[MSRP_H_FROM_PATH] = p;
+			msrp_send(msrp_session->socket, msrp_msg);
+		}
+
+		switch_safe_free(msrp_msg);
+		msrp_msg = NULL;
+
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "eat one message, left:%d\n", (int)msrp_session->msrp_msg_count);
+	}
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Echo down!\n");
+
+}
+
+SWITCH_STANDARD_APP(msrp_recv_function)
+{
+	msrp_session_t *msrp_session = NULL;
+	msrp_msg_t *msrp_msg = NULL;
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+	private_object_t *tech_pvt = switch_core_session_get_private(session);
+	switch_memory_pool_t *pool = switch_core_session_get_pool(session);
+	switch_file_t *fd;
+	const char *filename = data;
+
+	if (!tech_pvt) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "No tech_pvt!\n");
+		return;
+	}
+
+	if(!tech_pvt->msrp_session) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "No msrp_session!\n");
+		return;
+	}
+
+	if (zstr(data)) {
+		filename = switch_channel_get_variable(channel, "sip_msrp_file_name");
+		if (zstr(filename)) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "No file specified.\n");
+			return;
+		}
+		filename = switch_core_session_sprintf(session, "%s%s%s", SWITCH_GLOBAL_dirs.base_dir, SWITCH_PATH_SEPARATOR, filename);
+	}
+
+	if (!(msrp_session = tech_pvt->msrp_session)) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Not a msrp session!\n");
+		return;
+	}
+
+	if (switch_file_open(&fd, filename, SWITCH_FOPEN_WRITE | SWITCH_FOPEN_TRUNCATE | SWITCH_FOPEN_CREATE, SWITCH_FPROT_OS_DEFAULT, pool) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Error Open File %s\n", filename);
+		return;
+	}
+
+	while (1) {
+		if ((msrp_msg = msrp_session_pop_msg(msrp_session)) == NULL) {
+			if (!switch_channel_ready(channel)) break;
+			switch_yield(10000);
+			continue;
+		}
+
+		if (msrp_msg->method == MSRP_METHOD_SEND) {
+			switch_size_t bytes = msrp_msg->payload_bytes;
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "%s %" SWITCH_SIZE_T_FMT "bytes writing\n", switch_str_nil(msrp_msg->headers[MSRP_H_MESSAGE_ID]), bytes);
+			switch_file_write(fd, msrp_msg->payload, &bytes);
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "%" SWITCH_SIZE_T_FMT "bytes written\n", bytes);
+			if (bytes != msrp_msg->payload_bytes) {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "write fail, bytes lost!\n");
+			}
+		}
+
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "eat one message, left:%d\n", (int)msrp_session->msrp_msg_count);
+
+		switch_safe_free(msrp_msg);
+		msrp_msg = NULL;
+	}
+
+	switch_file_close(fd);
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "File closed!\n");
+}
+
+SWITCH_STANDARD_APP(msrp_send_function)
+{
+	msrp_session_t *msrp_session = NULL;
+	msrp_msg_t *msrp_msg = NULL;
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+	private_object_t *tech_pvt = switch_core_session_get_private(session);
+	switch_memory_pool_t *pool = switch_core_session_get_pool(session);
+	switch_file_t *fd;
+	const char *filename = data;
+	switch_size_t len = 2048;
+	char buf[2048];
+	int sanity = 10;
+
+	if (!tech_pvt) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "No tech_pvt!\n");
+		return;
+	}
+
+	if(!tech_pvt->msrp_session) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "No msrp_session!\n");
+		return;
+	}
+
+	if (!(msrp_session = tech_pvt->msrp_session)) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Not a msrp session!\n");
+		return;
+	}
+
+	if (switch_file_open(&fd, filename, SWITCH_FOPEN_READ, SWITCH_FPROT_OS_DEFAULT, pool) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Error Open File %s\n", filename);
+		return;
+	}
+
+	switch_assert(pool);
+
+	switch_zmalloc(msrp_msg, sizeof(msrp_msg_t));
+	switch_assert(msrp_msg);
+
+	msrp_msg->headers[MSRP_H_FROM_PATH] = switch_mprintf("msrp://%s:%d/%s;tcp",
+		tech_pvt->rtpip, tech_pvt->msrp_session->local_port, tech_pvt->msrp_session->call_id);
+	msrp_msg->headers[MSRP_H_TO_PATH] = tech_pvt->msrp_session->remote_path;
+	/*TODO: send file in octet or maybe guess mime?*/
+	msrp_msg->headers[MSRP_H_CONTENT_TYPE] = "application/octet-stream";
+	msrp_msg->headers[MSRP_H_CONTENT_TYPE] = "text/plain";
+
+	msrp_msg->bytes = switch_file_get_size(fd);
+	msrp_msg->byte_start = 1;
+
+	while(sanity-- && tech_pvt->msrp_session->socket == NULL) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Waiting socket\n");
+		switch_yield(1000000);
+	}
+
+	if (tech_pvt->msrp_session->socket == NULL) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Waiting for socket timedout, exiting...\n");
+		goto end;
+	}
+
+	while (switch_file_read(fd, buf, &len) == SWITCH_STATUS_SUCCESS &&
+		switch_channel_ready(channel)) {
+		msrp_msg->payload = buf;
+		msrp_msg->byte_end = msrp_msg->byte_start + len - 1;
+		msrp_msg->payload_bytes = len;
+
+		/*TODO: send in chunk should ending in + but not $ after delimiter*/
+		msrp_send(tech_pvt->msrp_session->socket, msrp_msg);
+
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "%ld bytes sent\n", len);
+
+		msrp_msg->byte_start += len;
+	}
+
+	sanity = 10;
+
+	while(sanity-- && switch_channel_ready(channel)) {
+		switch_yield(1000000);
+	}
+
+end:
+	switch_file_close(fd);
+
+	switch_safe_free(msrp_msg->headers[MSRP_H_FROM_PATH]);
+	switch_safe_free(msrp_msg);
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "File sent, closed!\n");
+}
+
+SWITCH_STANDARD_APP(msrp_bridge_function)
+{
+	switch_channel_t *caller_channel = switch_core_session_get_channel(session);
+	switch_core_session_t *peer_session = NULL;
+	switch_channel_t *peer_channel = NULL;
+	msrp_session_t *caller_msrp_session = NULL;
+	msrp_session_t *peer_msrp_session = NULL;
+	private_object_t *tech_pvt = NULL;
+	private_object_t *ptech_pvt = NULL;
+	msrp_msg_t *msrp_msg = NULL;
+	switch_call_cause_t cause = SWITCH_CAUSE_NORMAL_CLEARING;
+	switch_status_t status;
+
+	if (zstr(data)) {
+		return;
+	}
+
+	if ((status =
+		 switch_ivr_originate(session, &peer_session, &cause, data, 0, NULL, NULL, NULL, NULL, NULL, SOF_NONE, NULL)) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "Originate Failed.  Cause: %s\n", switch_channel_cause2str(cause));
+		return;
+	}
+
+	switch_ivr_signal_bridge(session, peer_session);
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msrp channel bridged\n");
+
+	peer_channel = switch_core_session_get_channel(session);
+	tech_pvt = switch_core_session_get_private(session);
+	ptech_pvt = switch_core_session_get_private(peer_session);
+
+	caller_msrp_session = tech_pvt->msrp_session;
+	peer_msrp_session = ptech_pvt->msrp_session;
+	switch_assert(caller_msrp_session);
+	switch_assert(peer_msrp_session);
+
+	if (switch_channel_test_flag(peer_channel, CF_ANSWERED) && !switch_channel_test_flag(caller_channel, CF_ANSWERED)) {
+		switch_channel_pass_callee_id(peer_channel, caller_channel);
+		switch_channel_answer(caller_channel);
+	}
+
+	// TODO we need to run the following code in a new thread
+	// TODO we cannot test channel_ready as we don't have (audio) media
+	// while (switch_channel_ready(caller_channel) && switch_channel_ready(peer_channel)){
+	while (switch_channel_get_state(caller_channel) == CS_HIBERNATE &&
+		switch_channel_get_state(peer_channel) == CS_HIBERNATE){
+		int found = 0;
+		if ((msrp_msg = msrp_session_pop_msg(caller_msrp_session))) {
+			if (msrp_msg->method == MSRP_METHOD_SEND) { /* write to peer */
+				msrp_msg->headers[MSRP_H_FROM_PATH] = switch_mprintf("msrp://%s:%d/%s;tcp",
+					ptech_pvt->rtpip, peer_msrp_session->local_port, peer_msrp_session->call_id);
+				msrp_msg->headers[MSRP_H_TO_PATH] = peer_msrp_session->remote_path;
+
+				if (peer_msrp_session->socket) {
+					msrp_send(peer_msrp_session->socket, msrp_msg);
+				} else {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "socket not ready, discarding one message!!\n");
+				}
+			}
+			switch_safe_free(msrp_msg);
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "eat one message, left:%d\n", (int)caller_msrp_session->msrp_msg_count);
+			found++;
+		}
+
+		if ((msrp_msg = msrp_session_pop_msg(peer_msrp_session))) {
+			if (msrp_msg->method == MSRP_METHOD_SEND) { /* write to caller */
+				msrp_msg->headers[MSRP_H_FROM_PATH] = switch_mprintf("msrp://%s:%d/%s;tcp",
+					tech_pvt->rtpip, caller_msrp_session->local_port, caller_msrp_session->call_id);
+				msrp_msg->headers[MSRP_H_TO_PATH] = caller_msrp_session->remote_path;
+				msrp_send(caller_msrp_session->socket, msrp_msg);
+			}
+			switch_safe_free(msrp_msg);
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "eat one message, left:%d\n", (int)peer_msrp_session->msrp_msg_count);
+			found++;
+		}
+
+		msrp_msg = NULL;
+		if (!found) switch_yield(100000);
+	}
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Bridge down!\n");
+
+	if (peer_session) {
+		switch_core_session_rwunlock(peer_session);
+	}
+}
+
+SWITCH_STANDARD_API(uuid_msrp_send_function)
+{
+	char *mycmd = NULL, *argv[3] = { 0 };
+	int argc;
+	switch_core_session_t *msession = NULL;
+	// msrp_session_t *msrp_session = NULL;
+	msrp_msg_t *msrp_msg = NULL;
+	private_object_t *tech_pvt = NULL;
+	switch_memory_pool_t *pool = NULL;
+
+	if (zstr(cmd) || !(mycmd = strdup(cmd))) {
+		goto error;
+	}
+
+	argc = switch_separate_string(mycmd, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
+
+	if (argc < 2 || !argv[0]) {
+		goto error;
+	}
+
+	if (!(msession = switch_core_session_locate(argv[0]))) {
+		stream->write_function(stream, "-ERR Usage: cannot locate session.\n");
+		return SWITCH_STATUS_SUCCESS;
+	}
+
+	tech_pvt = switch_core_session_get_private(msession);
+	pool = switch_core_session_get_pool(msession);
+	switch_assert(pool);
+
+	if (!tech_pvt) {
+		stream->write_function(stream, "-ERR No tech_pvt.\n");
+		switch_core_session_rwunlock(msession);
+		return SWITCH_STATUS_SUCCESS;
+	}
+
+	if(!tech_pvt->msrp_session) {
+		stream->write_function(stream, "-ERR No msrp_session.\n");
+		switch_core_session_rwunlock(msession);
+		return SWITCH_STATUS_SUCCESS;
+	}
+
+	switch_zmalloc(msrp_msg, sizeof(msrp_msg_t));
+	switch_assert(msrp_msg);
+
+	msrp_msg->headers[MSRP_H_FROM_PATH] = switch_mprintf("msrp://%s:%d/%s;tcp",
+		tech_pvt->rtpip, tech_pvt->msrp_session->local_port, tech_pvt->msrp_session->call_id);
+	msrp_msg->headers[MSRP_H_TO_PATH] = tech_pvt->msrp_session->remote_path;
+	msrp_msg->headers[MSRP_H_CONTENT_TYPE] = "text/plain";
+	msrp_msg->payload = switch_core_strdup(pool, argv[1]);
+
+	msrp_send(tech_pvt->msrp_session->socket, msrp_msg);
+
+	switch_safe_free(msrp_msg->headers[MSRP_H_FROM_PATH]);
+	switch_safe_free(msrp_msg);
+	stream->write_function(stream, "+OK sent\n");
+	switch_core_session_rwunlock(msession);
+	return SWITCH_STATUS_SUCCESS;
+error:
+	stream->write_function(stream, "-ERR Usage: uuid_msrp_send <uuid> msg\n");
+	return SWITCH_STATUS_SUCCESS;
+}
+
+void load_msrp_apis_and_applications(switch_loadable_module_interface_t **module_interface)
+{
+	switch_application_interface_t *app_interface;
+	switch_api_interface_t *api_interface;
+	SWITCH_ADD_API(api_interface, "uuid_msrp_send", "send msrp text", uuid_msrp_send_function, "<cmd> <args>");
+	SWITCH_ADD_APP(app_interface, "msrp_echo", "Echo msrp message", "Perform an echo test against the msrp channel", msrp_echo_function, "", SAF_NONE);
+	SWITCH_ADD_APP(app_interface, "msrp_recv", "Recv msrp message to file", "Recv msrp message", msrp_recv_function, "<filename>", SAF_NONE);
+	SWITCH_ADD_APP(app_interface, "msrp_send", "Send file via msrp", "Send file via msrp", msrp_send_function, "<filename>", SAF_NONE);
+	SWITCH_ADD_APP(app_interface, "msrp_bridge", "Bridge msrp channels", "Bridge msrp channels", msrp_bridge_function, "dialstr", SAF_NONE);
+
+}
+
 /* For Emacs:
  * Local Variables:
  * mode:c

@@ -74,4 +74,7 @@ switch_status_t msrp_session_destroy(msrp_session_t *session);
 switch_status_t msrp_session_push_msg(msrp_session_t *session, msrp_msg_t *msg);
 msrp_msg_t *msrp_session_pop_msg(msrp_session_t *session);
 switch_status_t msrp_send(switch_socket_t *sock, msrp_msg_t *msg);
+
+void load_msrp_apis_and_applications(switch_loadable_module_interface_t **moudle_interface);
+
 #endif
