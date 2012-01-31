@@ -4480,7 +4480,7 @@ uint8_t sofia_glue_negotiate_sdp(switch_core_session_t *session, const char *r_s
 	switch_channel_t *channel = switch_core_session_get_channel(session);
 	const char *val;
 	const char *crypto = NULL;
-	int got_crypto = 0, got_audio = 0, got_avp = 0, got_savp = 0, got_udptl = 0;
+	int got_crypto = 0, got_audio = 0, got_avp = 0, got_savp = 0, got_udptl = 0, got_msrp = 0;
 	int scrooge = 0;
 	sdp_parser_t *parser = NULL;
 	sdp_session_t *sdp;
