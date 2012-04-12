@@ -83,7 +83,7 @@ static int EC = 0;
 /* the maximum value for the IIR score [keeps loud & longwinded people from getting overweighted] */
 #define SCORE_MAX_IIR 25000
 /* the minimum score for which you can be considered to be loud enough to now have the floor */
-#define SCORE_IIR_SPEAKING_MAX 3000
+#define SCORE_IIR_SPEAKING_MAX 300
 /* the threshold below which you cede the floor to someone loud (see above value). */
 #define SCORE_IIR_SPEAKING_MIN 100
 
@@ -174,7 +174,8 @@ typedef enum {
 	CFLAG_INHASH = (1 << 11),
 	CFLAG_EXIT_SOUND = (1 << 12),
 	CFLAG_ENTER_SOUND = (1 << 13),
-	CFLAG_VIDEO_BRIDGE = (1 << 14)
+	CFLAG_VIDEO_BRIDGE = (1 << 14),
+	CFLAG_AUDIO_ALWAYS = (1 << 15)
 } conf_flag_t;
 
 typedef enum {
@@ -1104,6 +1105,7 @@ static switch_status_t conference_del_member(conference_obj_t *conference, confe
 
 		if (test_eflag(conference, EFLAG_FLOOR_CHANGE)) {
 			switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, CONF_EVENT_MAINT);
+			conference_add_event_data(conference, event); 
 			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Action", "floor-change");
 			switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Old-ID", "%d", member->id);
 			switch_event_add_header(event, SWITCH_STACK_BOTTOM, "New-ID", "none");
@@ -1257,15 +1259,17 @@ static void *SWITCH_THREAD_FUNC conference_video_thread_run(switch_thread_t *thr
 		}
 
 		session = conference->floor_holder->session;
-		switch_core_session_read_lock(session);
-		switch_mutex_unlock(conference->mutex);
-		if (!switch_channel_ready(switch_core_session_get_channel(session))) {
-			status = SWITCH_STATUS_FALSE;
-		} else {
-			status = switch_core_session_read_video_frame(session, &vid_frame, SWITCH_IO_FLAG_NONE, 0);
+
+		if ((status = switch_core_session_read_lock(session)) == SWITCH_STATUS_SUCCESS) {
+			switch_mutex_unlock(conference->mutex);
+			if (!switch_channel_ready(switch_core_session_get_channel(session))) {
+				status = SWITCH_STATUS_FALSE;
+			} else {
+				status = switch_core_session_read_video_frame(session, &vid_frame, SWITCH_IO_FLAG_NONE, 0);
+			}
+			switch_mutex_lock(conference->mutex);
+			switch_core_session_rwunlock(session);
 		}
-		switch_mutex_lock(conference->mutex);
-		switch_core_session_rwunlock(session);
 
 		if (!SWITCH_READ_ACCEPTABLE(status)) {
 			yield = 100000;
@@ -2667,8 +2671,8 @@ static void *SWITCH_THREAD_FUNC conference_loop_input(switch_thread_t *thread, v
 		}
 
 		/* skip frames that are not actual media or when we are muted or silent */
-		if ((switch_test_flag(member, MFLAG_TALKING) || member->energy_level == 0) && switch_test_flag(member, MFLAG_CAN_SPEAK) &&
-			!switch_test_flag(member->conference, CFLAG_WAIT_MOD)) {
+		if ((switch_test_flag(member, MFLAG_TALKING) || member->energy_level == 0 || switch_test_flag(member->conference, CFLAG_AUDIO_ALWAYS)) 
+			&& switch_test_flag(member, MFLAG_CAN_SPEAK) &&	!switch_test_flag(member->conference, CFLAG_WAIT_MOD)) {
 			switch_audio_resampler_t *read_resampler = member->read_resampler;
 			void *data;
 			uint32_t datalen;
@@ -4423,6 +4427,10 @@ static void conference_xlist(conference_obj_t *conference, switch_xml_t x_confer
 		switch_xml_set_attr_d(x_conference, "wait_mod", "true");
 	}
 
+	if (switch_test_flag(conference, CFLAG_AUDIO_ALWAYS)) {
+		switch_xml_set_attr_d(x_conference, "audio_always", "true");
+	}
+
 	if (switch_test_flag(conference, CFLAG_RUNNING)) {
 		switch_xml_set_attr_d(x_conference, "running", "true");
 	}
@@ -5959,6 +5967,8 @@ static void set_cflags(const char *flags, uint32_t *f)
 				*f |= CFLAG_VID_FLOOR;
 			} else if (!strcasecmp(argv[i], "video-bridge")) {
 				*f |= CFLAG_VIDEO_BRIDGE;
+			} else if (!strcasecmp(argv[i], "audio-always")) {
+				*f |= CFLAG_AUDIO_ALWAYS;
 			}
 		}		
 
@@ -6954,7 +6964,7 @@ static conference_obj_t *conference_new(char *name, conf_xml_cfg_t cfg, switch_c
 	switch_uuid_t uuid;
 	switch_codec_implementation_t read_impl = { 0 };
 	switch_channel_t *channel = NULL;
-	const char *force_rate = NULL, *force_interval = NULL;
+	const char *force_rate = NULL, *force_interval = NULL, *presence_id = NULL;
 	uint32_t force_rate_i = 0, force_interval_i = 0;
 
 	/* Validate the conference name */
@@ -6969,6 +6979,8 @@ static conference_obj_t *conference_new(char *name, conf_xml_cfg_t cfg, switch_c
 		switch_core_session_get_read_impl(session, &read_impl);
 		channel = switch_core_session_get_channel(session);
 		
+		presence_id = switch_channel_get_variable(channel, "presence_id");
+
 		if ((force_rate = switch_channel_get_variable(channel, "conference_force_rate"))) {
 			if (!strcasecmp(force_rate, "auto")) {
 				force_rate_i = read_impl.actual_samples_per_second;
@@ -7362,7 +7374,11 @@ static conference_obj_t *conference_new(char *name, conf_xml_cfg_t cfg, switch_c
 
 	conference->name = switch_core_strdup(conference->pool, name);
 
-	if ((name_domain = strchr(conference->name, '@'))) {
+	if (presence_id && (name_domain = strchr(presence_id, '@'))) {
+		name_domain++;
+		conference->domain = switch_core_strdup(conference->pool, name_domain);
+	} else if ((name_domain = strchr(conference->name, '@'))) {
+		name_domain++;
 		conference->domain = switch_core_strdup(conference->pool, name_domain);
 	} else if (domain) {
 		conference->domain = switch_core_strdup(conference->pool, domain);

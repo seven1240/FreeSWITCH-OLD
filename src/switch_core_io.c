@@ -41,7 +41,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_write_video_frame(switch_cor
 	switch_io_event_hook_video_write_frame_t *ptr;
 	switch_status_t status = SWITCH_STATUS_FALSE;
 
-	if (switch_channel_down_nosig(session->channel)) {
+	if (switch_channel_down(session->channel)) {
 		return SWITCH_STATUS_FALSE;
 	}
 
@@ -65,7 +65,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_read_video_frame(switch_core
 
 	switch_assert(session != NULL);
 
-	if (switch_channel_down_nosig(session->channel)) {
+	if (switch_channel_down(session->channel)) {
 		return SWITCH_STATUS_FALSE;
 	}
 
@@ -153,7 +153,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_read_frame(switch_core_sessi
 		}
 	}
 	
-	if (switch_channel_down_nosig(session->channel) || !switch_core_codec_ready(session->read_codec)) {
+	if (switch_channel_down(session->channel) || !switch_core_codec_ready(session->read_codec)) {
 		*frame = NULL;
 		status = SWITCH_STATUS_FALSE;
 		goto even_more_done;
@@ -486,13 +486,8 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_read_frame(switch_core_sessi
 				}
 
 				if (bp->ready && switch_test_flag(bp, SMBF_READ_STREAM)) {
-					audio_buffer_header_t h = { 0 };
-
 					switch_mutex_lock(bp->read_mutex);
-					h.ts = bp->timer.samplecount;
-					h.len = read_frame->datalen;
-					switch_buffer_write(bp->raw_read_buffer, &h, sizeof(h));
-					switch_buffer_write(bp->raw_read_buffer, read_frame->data, h.len);
+					switch_buffer_write(bp->raw_read_buffer, read_frame->data, read_frame->datalen);
 
 					if (bp->callback) {
 						ok = bp->callback(bp, bp->user_data, SWITCH_ABC_TYPE_READ);
@@ -652,10 +647,6 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_read_frame(switch_core_sessi
 				if (switch_test_flag(bp, SMBF_PRUNE)) {
 					prune++;
 					continue;
-				}
-
-				if (bp->ready && bp->timer.timer_interface) {
-					switch_core_timer_sync(&bp->timer);
 				}
 
 				if (bp->ready && switch_test_flag(bp, SMBF_READ_PING)) {
@@ -982,14 +973,8 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_write_frame(switch_core_sess
 			}
 
 			if (switch_test_flag(bp, SMBF_WRITE_STREAM)) {
-				audio_buffer_header_t h = { 0 };
-				
 				switch_mutex_lock(bp->write_mutex);
-				h.ts = bp->timer.samplecount;
-				h.len = write_frame->datalen;
-				
-				switch_buffer_write(bp->raw_write_buffer, &h, sizeof(h));
-				switch_buffer_write(bp->raw_write_buffer, write_frame->data, h.len);
+				switch_buffer_write(bp->raw_write_buffer, write_frame->data, write_frame->datalen);
 				switch_mutex_unlock(bp->write_mutex);
 				
 				if (bp->callback) {
@@ -1074,6 +1059,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_write_frame(switch_core_sess
 				session->enc_write_frame.m = frame->m;
 				session->enc_write_frame.ssrc = frame->ssrc;
 				session->enc_write_frame.seq = frame->seq;
+				session->enc_write_frame.flags = 0;
 				write_frame = &session->enc_write_frame;
 				break;
 			case SWITCH_STATUS_NOOP:
@@ -1128,7 +1114,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_write_frame(switch_core_sess
 			while (switch_buffer_inuse(session->raw_write_buffer) >= session->write_impl.decoded_bytes_per_packet) {
 				int rate;
 
-				if (switch_channel_down_nosig(session->channel) || !session->raw_write_buffer) {
+				if (switch_channel_down(session->channel) || !session->raw_write_buffer) {
 					goto error;
 				}
 				if ((session->raw_write_frame.datalen = (uint32_t)
@@ -1188,6 +1174,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_write_frame(switch_core_sess
 					session->enc_write_frame.m = frame->m;
 					session->enc_write_frame.ssrc = frame->ssrc;
 					session->enc_write_frame.payload = session->write_impl.ianacode;
+					session->enc_write_frame.flags = 0;
 					write_frame = &session->enc_write_frame;
 					break;
 				case SWITCH_STATUS_NOOP:
@@ -1309,7 +1296,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_recv_dtmf(switch_core_sessio
 	switch_dtmf_t new_dtmf;
 	int fed = 0;
 	
-	if (switch_channel_down_nosig(session->channel)) {
+	if (switch_channel_down(session->channel)) {
 		return SWITCH_STATUS_FALSE;
 	}
 
@@ -1352,7 +1339,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_send_dtmf(switch_core_sessio
 	switch_status_t status = SWITCH_STATUS_FALSE;
 	switch_dtmf_t new_dtmf;
 
-	if (switch_channel_down_nosig(session->channel)) {
+	if (switch_channel_down(session->channel)) {
 		return SWITCH_STATUS_FALSE;
 	}
 
@@ -1431,7 +1418,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_session_send_dtmf_string(switch_core
 		dtmf.flags = 0;
 	}
 
-	if (switch_channel_down_nosig(session->channel)) {
+	if (switch_channel_down(session->channel)) {
 		return SWITCH_STATUS_FALSE;
 	}
 

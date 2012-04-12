@@ -85,6 +85,7 @@ static switch_mutex_t *EVENT_QUEUE_MUTEX = NULL;
 static switch_hash_t *CUSTOM_HASH = NULL;
 static int THREAD_COUNT = 0;
 static int SYSTEM_RUNNING = 0;
+static uint64_t EVENT_SEQUENCE_NR = 0;
 #ifdef SWITCH_EVENT_RECYCLE
 static switch_queue_t *EVENT_RECYCLE_QUEUE = NULL;
 static switch_queue_t *EVENT_HEADER_RECYCLE_QUEUE = NULL;
@@ -1456,7 +1457,7 @@ SWITCH_DECLARE(switch_status_t) switch_event_create_brackets(char *data, char a,
 	switch_event_t *e = *event;
 	char *var_array[1024] = { 0 };
 	int var_count = 0;
-	char *next;
+	char *next = NULL, *vnext = NULL;
 
 	if (dup) {
 		vdatap = strdup(data);
@@ -1478,6 +1479,7 @@ SWITCH_DECLARE(switch_status_t) switch_event_create_brackets(char *data, char a,
 	if (check_a) end = check_a;
 	
 	if (end) {
+		next = end;
 		vdata++;
 		*end++ = '\0';
 	} else {
@@ -1493,13 +1495,17 @@ SWITCH_DECLARE(switch_status_t) switch_event_create_brackets(char *data, char a,
 
 	
 	for (;;) {
-		if ((next = strchr(vdata, b))) {
+		if (next) {
 			char *pnext;
+
 			*next++ = '\0';
 
 			if ((pnext = switch_strchr_strict(next, a, " "))) {
 				next = pnext + 1;
 			}
+
+			vnext = switch_find_end_paren(next, a, b);
+			next = NULL;
 		}
 			
 
@@ -1518,14 +1524,14 @@ SWITCH_DECLARE(switch_status_t) switch_event_create_brackets(char *data, char a,
 
 				if ((inner_var_count = switch_separate_string(var_array[x], '=',
 															  inner_var_array, (sizeof(inner_var_array) / sizeof(inner_var_array[0])))) == 2) {
-					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Parsing variable [%s]=[%s]\n", inner_var_array[0], inner_var_array[1]);
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Parsing variable [%s]=[%s]\n", inner_var_array[0], inner_var_array[1]);
 					switch_event_add_header_string(e, SWITCH_STACK_BOTTOM, inner_var_array[0], inner_var_array[1]);
 				}
 			}
 		}
 
-		if (next) {
-			vdata = next;
+		if (vnext) {
+			vdata = vnext;
 		} else {
 			break;
 		}
@@ -1740,6 +1746,10 @@ SWITCH_DECLARE(void) switch_event_prep_for_delivery_detailed(const char *file, c
 	switch_size_t retsize;
 	switch_time_t ts = switch_micro_time_now();
 
+	switch_mutex_lock(EVENT_QUEUE_MUTEX);
+	EVENT_SEQUENCE_NR++;
+	switch_mutex_unlock(EVENT_QUEUE_MUTEX);
+
 
 	switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Event-Name", switch_event_name(event->event_id));
 	switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Core-UUID", switch_core_get_uuid());
@@ -1757,6 +1767,7 @@ SWITCH_DECLARE(void) switch_event_prep_for_delivery_detailed(const char *file, c
 	switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Event-Calling-File", switch_cut_path(file));
 	switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Event-Calling-Function", func);
 	switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Event-Calling-Line-Number", "%d", line);
+	switch_event_add_header(event, SWITCH_STACK_BOTTOM, "Event-Sequence", "%" SWITCH_UINT64_T_FMT, (uint64_t) EVENT_SEQUENCE_NR);
 
 
 }
@@ -1987,7 +1998,7 @@ SWITCH_DECLARE(char *) switch_event_expand_headers_check(switch_event_t *event, 
 	char *data, *indup, *endof_indup;
 	size_t sp = 0, len = 0, olen = 0, vtype = 0, br = 0, cpos, block = 128;
 	const char *sub_val = NULL;
-	char *cloned_sub_val = NULL;
+	char *cloned_sub_val = NULL, *expanded_sub_val = NULL;
 	char *func_val = NULL;
 	int nv = 0;
 	char *gvar = NULL, *sb = NULL;
@@ -2150,23 +2161,30 @@ SWITCH_DECLARE(char *) switch_event_expand_headers_check(switch_event_t *event, 
 							sub_val = "INVALID";
 						}
 
-					}
 
-					if (offset || ooffset) {
-						cloned_sub_val = strdup(sub_val);
-						switch_assert(cloned_sub_val);
-						sub_val = cloned_sub_val;
-					}
+						if ((expanded_sub_val = switch_event_expand_headers(event, sub_val)) == sub_val) {
+							expanded_sub_val = NULL;
+						} else {
+							sub_val = expanded_sub_val;
+						}
+					
 
-					if (offset >= 0) {
-						sub_val += offset;
-					} else if ((size_t) abs(offset) <= strlen(sub_val)) {
-						sub_val = cloned_sub_val + (strlen(cloned_sub_val) + offset);
-					}
+						if (offset || ooffset) {
+							cloned_sub_val = strdup(sub_val);
+							switch_assert(cloned_sub_val);
+							sub_val = cloned_sub_val;
+						}
+						
+						if (offset >= 0) {
+							sub_val += offset;
+						} else if ((size_t) abs(offset) <= strlen(sub_val)) {
+							sub_val = cloned_sub_val + (strlen(cloned_sub_val) + offset);
+						}
 
-					if (ooffset > 0 && (size_t) ooffset < strlen(sub_val)) {
-						if ((ptr = (char *) sub_val + ooffset)) {
-							*ptr = '\0';
+						if (ooffset > 0 && (size_t) ooffset < strlen(sub_val)) {
+							if ((ptr = (char *) sub_val + ooffset)) {
+								*ptr = '\0';
+							}
 						}
 					}
 
@@ -2226,6 +2244,7 @@ SWITCH_DECLARE(char *) switch_event_expand_headers_check(switch_event_t *event, 
 
 				switch_safe_free(func_val);
 				switch_safe_free(cloned_sub_val);
+				switch_safe_free(expanded_sub_val);
 				sub_val = NULL;
 				vname = NULL;
 				vtype = 0;

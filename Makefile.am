@@ -147,7 +147,16 @@ libfreeswitch_la_LDFLAGS += $(ODBC_LIB_FLAGS)
 endif
 
 if ENABLE_ZRTP
-libfreeswitch_la_LDFLAGS += -lzrtp -lbn
+CORE_CFLAGS += -I$(switch_srcdir)/libs/libzrtp/third_party/bgaes
+CORE_CFLAGS += -I$(switch_srcdir)/libs/libzrtp/third_party/bnlib
+CORE_CFLAGS += -isystem $(switch_srcdir)/libs/libzrtp/include
+ZRTP_LDFLAGS = -Llibs/libzrtp/third_party/bnlib
+ZRTP_LDFLAGS += -Llibs/libzrtp/projects/gnu/build
+ZRTP_LIBS = -lbn -lzrtp
+libfreeswitch_la_LDFLAGS += $(ZRTP_LDFLAGS)
+libfreeswitch_la_LIBADD += $(ZRTP_LIBS)
+CORE_LIBS += libs/libzrtp/projects/gnu/build/libzrtp.a
+LIBS += libs/libzrtp/third_party/bnlib/libbn.a
 endif
 
 library_includedir      = $(includedir)
@@ -415,13 +424,6 @@ src/include/switch_version.h: src/include/switch_version.h.in .version $(libfree
 	    else \
 	      version="git-$$version" ; \
 	    fi ;\
-	  else \
-	    version=`svnversion . -n || echo hacked` ; \
-	    if [ "x$$version" = "xhacked" ] ; then \
-	      version="hacked-`date -u +%Y%m%dT%H%M%SZ`" ; \
-	    else \
-	      version="svn-$$version" ; \
-	    fi ;\
 	  fi ; \
 	  oldversion=`cat .version 2>/dev/null || echo "0"` ; \
 	  if test "$$oldversion" != "$$version" || test $$force = 1 ; then \
@@ -435,6 +437,9 @@ src/include/switch_version.h: src/include/switch_version.h.in .version $(libfree
 ##
 libs/libedit/src/.libs/libedit.a:
 	cd libs/libedit && $(MAKE)
+
+libs/libzrtp/projects/gnu/build/libzrtp.a:
+	cd libs/libzrtp/projects/gnu && $(MAKE)
 
 libs/curl/Makefile:
 	cd libs/curl && sh ./configure.gnu --prefix=$(prefix)
@@ -467,13 +472,12 @@ libs/srtp/libsrtp.la: libs/srtp libs/srtp/.update
 	@cd libs/srtp && $(MAKE)
 	@$(TOUCH_TARGET)
 
-
 ##
 ## helper targets
 ##
 yaml-files:
 	@echo `mkdir $(DESTDIR)$(sysconfdir)/yaml 2>/dev/null`
-	$(INSTALL) -m 644 $(switch_srcdir)/conf/yaml/*.yaml $(DESTDIR)$(sysconfdir)/yaml
+	$(INSTALL) -m 644 $(switch_srcdir)/conf/default/yaml/*.yaml $(DESTDIR)$(sysconfdir)/yaml
 
 vm-sync:
 	test -d $(DESTDIR)$(sysconfdir) || $(mkinstalldirs) $(DESTDIR)$(sysconfdir)
@@ -481,28 +485,31 @@ vm-sync:
 	test -d $(DESTDIR)$(sysconfdir)/lang/en || $(mkinstalldirs) $(DESTDIR)$(sysconfdir)/lang/en
 	test -d $(DESTDIR)$(sysconfdir)/lang/en/demo || $(mkinstalldirs) $(DESTDIR)$(sysconfdir)/lang/en/demo
 	test -d $(DESTDIR)$(sysconfdir)/lang/en/vm || $(mkinstalldirs) $(DESTDIR)$(sysconfdir)/lang/en/vm
-	$(INSTALL) -m 644 $(switch_srcdir)/conf/lang/en/vm/* $(DESTDIR)$(sysconfdir)/lang/en/vm
-	$(INSTALL) -m 644 $(switch_srcdir)/conf/lang/en/demo/* $(DESTDIR)$(sysconfdir)/lang/en/demo
+	$(INSTALL) -m 644 $(switch_srcdir)/conf/vanilla/lang/en/vm/* $(DESTDIR)$(sysconfdir)/lang/en/vm
+	$(INSTALL) -m 644 $(switch_srcdir)/conf/vanilla/lang/en/demo/* $(DESTDIR)$(sysconfdir)/lang/en/demo
 
-samples-conf:
+config-%:
 	test -d $(DESTDIR)$(sysconfdir) || $(mkinstalldirs) $(DESTDIR)$(sysconfdir)
-	for conffile in `cd $(switch_srcdir)/conf && find . -name \*.xml && find . -name \*.conf && find . -name \*.tpl  && find . -name \*.ttml && find . -name mime.types` ; do \
+	for conffile in `cd $(switch_srcdir)/conf/$* && find . -name \*.xml && find . -name \*.conf && find . -name \*.tpl  && find . -name \*.ttml && find . -name mime.types` ; do \
 		dir=`echo $$conffile | sed -e 's|^\.||' | sed -e 's|/[^/]*$$||'`; \
 		filename=`echo $$conffile | sed -e 's|^\.||' | sed -e 's|^.*/||'`; \
 		test -d $(DESTDIR)$(sysconfdir)$$dir || $(mkinstalldirs) $(DESTDIR)$(sysconfdir)$$dir ; \
 		test -f $(DESTDIR)$(sysconfdir)$$dir/$$filename || \
 		test -f $(DESTDIR)$(sysconfdir)$$dir/$$filename.noload || \
-			$(INSTALL) -m 644 $(switch_srcdir)/conf/$$dir/$$filename $(DESTDIR)$(sysconfdir)$$dir; \
+			$(INSTALL) -m 644 $(switch_srcdir)/conf/$*/$$dir/$$filename $(DESTDIR)$(sysconfdir)$$dir; \
 	done
+
+samples-conf: config-vanilla
 
 samples-htdocs: 
 	test -d $(DESTDIR)$(htdocsdir) || $(mkinstalldirs) $(DESTDIR)$(htdocsdir)
-	for htdocsfile in `cd $(switch_srcdir)/htdocs && find . -type f -name \* | grep -v .svn | sed -e 's|^\.||' ` ; do \
+	for htdocsfile in `cd $(switch_srcdir)/htdocs && find . -type f -name \* | sed -e 's|^\.||'` ; do \
 		dir=`echo $$htdocsfile | sed -e 's|/[^/]*$$||'`; \
 		filename=`echo $$htdocsfile | sed -e 's|^.*/||'`; \
 		test -d $(DESTDIR)$(htdocsdir)$$dir || $(mkinstalldirs) $(DESTDIR)$(htdocsdir)$$dir ; \
 		test -f $(DESTDIR)$(htdocsdir)$$dir/$$filename || $(INSTALL) -m 644 $(switch_srcdir)/htdocs/$$dir/$$filename $(DESTDIR)$(htdocsdir)$$dir 2>/dev/null;  \
 	done
+
 
 samples: samples-conf samples-htdocs
 
@@ -518,29 +525,23 @@ install-data-local:
 	test -d $(DESTDIR)$(htdocsdir) || $(MAKE) samples-htdocs
 
 is-scm:
-	@if [ ! -d .svn -a ! -d .git ] ; then \
+	@if [ ! -d .git ] ; then \
 		echo ; echo ; \
 		echo "*****************************************************************************************************" ; \
-		echo "You can not update a release tarball or without a git or svn working copy please clone our git tree: " ; \
-		echo "git clone git://git.freeswitch.org/freeswitch.git                                                    " ; \
-		echo "or check out our read only svn mirror:                                                               " ; \
-		echo "svn checkout http://svn.freeswitch.org/svn/freeswitch/trunk                                          " ; \
+		echo "You cannot update a release tarball without a git tree.  Please clone FreeSWITCH as so:              " ; \
+		echo "  git clone git://git.freeswitch.org/freeswitch.git                                                  " ; \
 		echo "*****************************************************************************************************" ; \
 		echo ; echo ; \
 		exit 1; \
 	fi 
 
 update: is-scm
-	@if test -d .svn ; then \
-	  test ! -f .version || rm -f .version ; \
-	  echo Updating... ; \
-	  svn update ; \
-	elif test -d .git ; then \
+	@if test -d .git ; then \
 	  test ! -f .version || rm -f .version ; \
 	  echo "Pulling updates..." ; \
 	  git pull ; \
 	else \
-	  echo "This source directory is not a git tree or svn working copy" ; \
+	  echo "This source directory is not a git tree." ; \
 	fi
 
 .nodepends:
