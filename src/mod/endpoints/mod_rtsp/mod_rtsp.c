@@ -1,4 +1,4 @@
-/* 
+/*
  * FreeSWITCH Modular Media Switching Software Library / Soft-Switch Application
  * Copyright (C) 2005-2011, Anthony Minessale II <anthm@freeswitch.org>
  *
@@ -22,7 +22,7 @@
  * the Initial Developer. All Rights Reserved.
  *
  * Contributor(s):
- * 
+ *
  * Seven Du <dujinfang@gmail.com>
  *
  * mod_rtsp -- RTSP Streaming
@@ -34,9 +34,6 @@
 SWITCH_MODULE_LOAD_FUNCTION(mod_rtsp_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_rtsp_shutdown);
 SWITCH_MODULE_DEFINITION(mod_rtsp, mod_rtsp_load, mod_rtsp_shutdown, NULL);
-
-#define VID_BIT (1 << 31)
-#define VERSION 4201
 
 #define rtsp_set_flag_locked(obj, flag) assert(obj->flag_mutex != NULL);\
 switch_mutex_lock(obj->flag_mutex);\
@@ -145,6 +142,7 @@ enum {
 	RTSP_H_USER_AGENT,
 	RTSP_H_CSEQ,
 	RTSP_H_TRANSPORT,
+	RTSP_H_SESSION,
 	RTSP_H_UNKNOWN
 };
 
@@ -156,9 +154,11 @@ typedef struct rtsp_msg {
 	char *full_path;
 	char *path;
 	int cseq;
-	char code[3];
+	uint code;
 	char *code_description;
 	char *last_p;
+	int content_length;
+	char *body;
 } rtsp_msg_t;
 
 
@@ -178,8 +178,8 @@ static switch_status_t rtsp_kill_channel(switch_core_session_t *session, int sig
 /* BODY OF THE MODULE */
 /*************************************************************************************************************************************************************/
 
-/* 
-   State methods they get called when the state changes to the specific state 
+/*
+   State methods they get called when the state changes to the specific state
    returning SWITCH_STATUS_SUCCESS tells the core to execute the standard state method next
    so if you fully implement the state you can return SWITCH_STATUS_FALSE to skip it.
 */
@@ -326,9 +326,9 @@ static switch_status_t rtsp_read_frame(switch_core_session_t *session, switch_fr
 	switch_set_flag(&tech_pvt->read_frame, SFF_CNG);
 
 	// rtsp_set_flag_locked(tech_pvt, TFLAG_READING);
-	// 
+	//
 	// status = switch_rtp_zerocopy_read_frame(tech_pvt->rtp_session, &tech_pvt->read_frame, flags);
-	// 
+	//
 	// rtsp_clear_flag_locked(tech_pvt, TFLAG_READING);
 	// switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "reading frame %d\n", stream_id);
 
@@ -353,14 +353,14 @@ static switch_status_t rtsp_read_video_frame(switch_core_session_t *session, swi
 {
 	private_object_t *tech_pvt = switch_core_session_get_private(session);
 	// switch_status_t status;
-	
+
 	tech_pvt->read_frame.datalen = 0;
 	switch_set_flag(&tech_pvt->read_frame, SFF_CNG);
-	
+
 	// rtsp_set_flag_locked(tech_pvt, TFLAG_READING);
-	// 
+	//
 	// 	status = switch_rtp_zerocopy_read_frame(tech_pvt->rtp_session, &tech_pvt->read_frame, flags);
-	// 
+	//
 	// 	rtsp_clear_flag_locked(tech_pvt, TFLAG_READING);
 	// 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "reading frame %d\n", stream_id);
 
@@ -410,11 +410,11 @@ static switch_status_t rtsp_kill_channel(switch_core_session_t *session, int sig
 	if (!tech_pvt) {
 		return SWITCH_STATUS_FALSE;
 	}
-	
+
 	switch (sig) {
 	case SWITCH_SIG_BREAK:
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "SIG BREAK\n");
-	
+
 		if (switch_rtp_ready(tech_pvt->rtp_session)) {
 			switch_rtp_break(tech_pvt->rtp_session);
 		}
@@ -428,7 +428,7 @@ static switch_status_t rtsp_kill_channel(switch_core_session_t *session, int sig
 
 		rtsp_clear_flag_locked(tech_pvt, TFLAG_IO);
 		rtsp_set_flag_locked(tech_pvt, TFLAG_HUP);
-	
+
 		if (switch_rtp_ready(tech_pvt->rtp_session)) {
 			switch_rtp_kill_socket(tech_pvt->rtp_session);
 		}
@@ -604,7 +604,6 @@ switch_status_t rtsp_new_channel(switch_core_session_t **new_session, int remote
 		return SWITCH_STATUS_FALSE;
 	}
 
-	rtsp_set_flag(tech_pvt, TFLAG_RTP);
 	rtsp_set_flag(tech_pvt, TFLAG_IO);
 
 	switch_rtp_activate_rtcp(tech_pvt->rtp_session, 1000, 4441);
@@ -764,8 +763,8 @@ rtsp_msg_t *rtsp_parse(char *buf, switch_memory_pool_t *pool)
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Invalid rtsp header!\n");
 		return rtsp_msg;
 	}
-	
-	if (strncmp(argv[2], "RTSP/1.0", 8)) {
+
+	if (strncmp(argv[2], "RTSP/1.0", 8) && strncmp(argv[0], "RTSP/1.0", 8)) {
 		rtsp_msg->parse_state = RTSP_ST_ERROR;
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unsupported RTSP Version!\n");
 		return rtsp_msg;
@@ -786,8 +785,14 @@ rtsp_msg_t *rtsp_parse(char *buf, switch_memory_pool_t *pool)
 		rtsp_msg->method = RTSP_M_PLAY;
 	} else if (!strncmp(p, "STOP", 4)) {
 		rtsp_msg->method = RTSP_M_PLAY;
-	} else	if (!strncmp(p, "TEARDOWN", 8)) {
+	} else if (!strncmp(p, "TEARDOWN", 8)) {
 		rtsp_msg->method = RTSP_M_TEARDOWN;
+	} else if (!strncmp(p, "RTSP/1.0", 8)) {
+		rtsp_msg->method = RTSP_M_REPLY;
+		rtsp_msg->code = atoi(argv[1]);
+		rtsp_msg->code_description = switch_core_strdup(pool, argv[2]);
+		p = argv[2];
+		goto parse_headers;
 	} else {
 		rtsp_msg->parse_state = RTSP_ST_ERROR;
 		return rtsp_msg;
@@ -799,7 +804,7 @@ rtsp_msg_t *rtsp_parse(char *buf, switch_memory_pool_t *pool)
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "%s\n", p);
 
-	if (strncasecmp(p, "rtsp://", 7)) {
+	if (rtsp_msg->method != RTSP_M_REPLY && strncasecmp(p, "rtsp://", 7)) {
 		rtsp_msg->parse_state = RTSP_ST_ERROR;
 		return rtsp_msg;
 	}
@@ -820,6 +825,9 @@ rtsp_msg_t *rtsp_parse(char *buf, switch_memory_pool_t *pool)
 		rtsp_msg->path = switch_core_strdup(pool, p);
 	}
 
+
+parse_headers:
+
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "%s\n", p);
 
 	while(*buf) {
@@ -832,7 +840,7 @@ rtsp_msg_t *rtsp_parse(char *buf, switch_memory_pool_t *pool)
 			assert(buf);
 			rtsp_msg->cseq = atoi(buf);
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "p: %lx, %s\n", (long unsigned int)p, p);
-			
+
 			buf = p + 2;
 		} else if (!strncmp(buf, "Transport:", 10)) {
 			buf += 10;
@@ -846,6 +854,24 @@ rtsp_msg_t *rtsp_parse(char *buf, switch_memory_pool_t *pool)
 			assert(buf);
 			rtsp_msg->headers[RTSP_H_USER_AGENT] = switch_core_strdup(pool, buf);
 			buf = p + 2;
+		} else if (!strncmp(buf, "Session:", 8)) {
+			buf += 8;
+			if (*buf == ' ') buf++;
+			assert(buf);
+			rtsp_msg->headers[RTSP_H_SESSION] = switch_core_strdup(pool, buf);
+			buf = p + 2;
+		} else if (!strncmp(buf, "Content-Length:", 15)) {
+			buf += 15;
+			if (*buf == ' ') buf++;
+			assert(buf);
+			rtsp_msg->content_length = atoi(buf);
+			if (rtsp_msg->content_length > 2048) {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "hack me?\n");
+				break;
+				rtsp_msg->parse_state = RTSP_ST_ERROR;
+			}
+			rtsp_msg->parse_state = RTSP_ST_WAIT_BODY;
+			return rtsp_msg;
 		} else {
 			buf = p + 2;
 		}
@@ -1017,7 +1043,7 @@ static void *SWITCH_THREAD_FUNC rtsp_worker(switch_thread_t *thread, void *obj)
 						sdp_len, sdp);
 					assert(msg);
 					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msg: %s\n", msg);
-				
+
 					msg_len = strlen(msg);
 					switch_socket_send(sock, msg, &msg_len);
 
@@ -1036,7 +1062,7 @@ static void *SWITCH_THREAD_FUNC rtsp_worker(switch_thread_t *thread, void *obj)
 							switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "remote video rtp port not found!\n");
 							goto end;
 						}
-					
+
 						rtsp_new_channel(&session, remote_video_port, destination_number);
 
 						if (!session) {
@@ -1055,7 +1081,7 @@ static void *SWITCH_THREAD_FUNC rtsp_worker(switch_thread_t *thread, void *obj)
 						rtsp_msg->cseq, remote_video_port, remote_video_port+1, uuid);
 						assert(msg);
 						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msg: %s\n", msg);
-						
+
 					msg_len = strlen(msg),
 					switch_socket_send(sock, msg, &msg_len);
 					switch_safe_free(msg);
@@ -1083,7 +1109,7 @@ static void *SWITCH_THREAD_FUNC rtsp_worker(switch_thread_t *thread, void *obj)
 					msg_len = strlen(msg),
 					switch_socket_send(sock, msg, &msg_len);
 					switch_safe_free(msg);
-					
+
 					if (channel && switch_channel_ready(channel)) {
 						switch_channel_hangup(channel, SWITCH_CAUSE_NORMAL_CLEARING);
 					}
@@ -1096,7 +1122,7 @@ static void *SWITCH_THREAD_FUNC rtsp_worker(switch_thread_t *thread, void *obj)
 						rtsp_msg->cseq);
 					assert(msg);
 					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msg: %s\n", msg);
-					
+
 					msg_len = strlen(msg);
 					switch_socket_send(sock, msg, &msg_len);
 					switch_safe_free(msg);
@@ -1343,6 +1369,382 @@ static switch_status_t rtsp_receive_event(switch_core_session_t *session, switch
 	return SWITCH_STATUS_SUCCESS;
 }
 
+struct channel_loop_helper {
+	switch_socket_t *sock;
+	switch_core_session_t *session;
+	switch_rtp_t *rtp_session;
+	switch_rtp_t **video_rtp_session;
+	int running;
+};
+
+static void *SWITCH_THREAD_FUNC channel_loop(switch_thread_t *thread, void *obj)
+{
+	struct channel_loop_helper *helper = obj;
+	switch_socket_t *sock = helper->sock;
+	switch_core_session_t *session = helper->session;
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+	switch_rtp_t *video_rtp_session = *(helper->video_rtp_session);
+	switch_frame_t frame;
+	switch_status_t status;
+
+	while(switch_channel_ready(channel) && helper->running) {
+		if (!video_rtp_session) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "yield\n");
+
+			switch_yield(1000000);
+			video_rtp_session = *(helper->video_rtp_session);
+			continue;
+		}
+
+		status = switch_rtp_zerocopy_read_frame(video_rtp_session, &frame, SWITCH_IO_FLAG_NONE);
+
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "framelen: %d\n", frame.datalen);
+
+		if (!SWITCH_READ_ACCEPTABLE(status)) {
+			break;
+		}
+
+		if (switch_channel_test_flag(channel, CF_VIDEO)) {
+			switch_core_session_write_video_frame(session, &frame, SWITCH_IO_FLAG_NONE, 0);
+		}
+	}
+
+	helper->running = 0;
+
+	close_socket(&sock);
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "closing channel\n");
+
+	return NULL;
+}
+
+SWITCH_STANDARD_APP(play_rtsp_function)
+{
+	char *host, *port_name, *path, *user = NULL, *pass = NULL, *msg;
+	switch_socket_t *new_sock;
+	switch_sockaddr_t *sa;
+	switch_port_t port = 554;
+	int argc = 0, cseq = 1;
+	char *argv[80] = { 0 };
+	char *mydata;
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+	switch_memory_pool_t *pool = switch_core_session_get_pool(session);
+	switch_rtp_t *video_rtp_session = NULL;
+	const char *err;
+	switch_thread_t *thread;
+	switch_threadattr_t *thd_attr;
+	struct channel_loop_helper helper;
+
+	char buf[RTSP_BUFF_SIZE + 1] = { 0 };
+	char *p;
+	switch_size_t len = RTSP_BUFF_SIZE;
+	rtsp_msg_t *rtsp_msg = NULL;
+	switch_size_t msg_len;
+
+	channel = switch_core_session_get_channel(session);
+
+	if (data && (mydata = switch_core_session_strdup(session, data))) {
+		argc = switch_separate_string(mydata, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
+	}
+
+	if (argc < 1) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Parse Error!\n");
+		return;
+	}
+
+	path = argv[0];
+
+	if (zstr(path) || strncasecmp(path, "rtsp://", 7)) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Invalid Path!\n");
+		return;
+	}
+
+	host = switch_core_session_strdup(session, path + 7);
+
+	if ((port_name = strrchr(host, ':'))) {
+		*port_name++ = '\0';
+		port = (switch_port_t) atoi(port_name);
+	} else {
+		port_name = strchr(host, '/');
+		*port_name = '\0';
+		port_name = NULL;
+	}
+
+	if (argc > 2) {
+		user = argv[1];
+		pass = argv[2];
+	}
+
+	switch_channel_set_variable(channel, "remote_rtsp_path", path);
+	switch_channel_set_variable(channel, "remote_rtsp_host", host);
+	switch_channel_set_variable_printf(channel, "remote_rtsp_port", "%d", port);
+
+	if (switch_sockaddr_info_get(&sa, host, SWITCH_UNSPEC, port, 0, switch_core_session_get_pool(session)) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Socket Error!\n");
+		return;
+	}
+
+	if (switch_socket_create(&new_sock, switch_sockaddr_get_family(sa), SOCK_STREAM, SWITCH_PROTO_TCP, switch_core_session_get_pool(session))
+		!= SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Socket Error!\n");
+		return;
+	}
+
+	switch_socket_opt_set(new_sock, SWITCH_SO_KEEPALIVE, 1);
+	switch_socket_opt_set(new_sock, SWITCH_SO_TCP_NODELAY, 1);
+
+	if (switch_socket_connect(new_sock, sa) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Socket Error!\n");
+		return;
+	}
+
+	helper.sock = new_sock;
+	helper.session = session;
+	helper.video_rtp_session = &video_rtp_session;
+
+	switch_threadattr_create(&thd_attr, pool);
+	switch_threadattr_detach_set(thd_attr, 1);
+	switch_threadattr_stacksize_set(thd_attr, SWITCH_THREAD_STACKSIZE);
+	helper.running = 1;
+	switch_thread_create(&thread, thd_attr, channel_loop, &helper, pool);
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "%s %s %s\n", path, user, pass);
+
+	if (!switch_channel_ready(channel)) return;
+
+	msg = switch_mprintf("OPTIONS %s RTSP/1.0\r\n"
+		"CSeq: %d\r\n"
+		"User-Agent: FreeSWITCH\r\n\r\n",
+		path, cseq++);
+	assert(msg);
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msg: %s\n", msg);
+
+	msg_len = strlen(msg),
+	switch_socket_send(new_sock, msg, &msg_len);
+	switch_safe_free(msg);
+
+	p = buf;
+	while(switch_socket_recv(new_sock, p, &len) == SWITCH_STATUS_SUCCESS) {
+		int bytes_left = 0;
+		char *end;
+
+		dump_buffer(buf, p+len-buf, __LINE__);
+
+		p[len] = '\0';
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "read bytes:%" SWITCH_SIZE_T_FMT "\n", len);
+
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "%s\n", buf);
+
+		if (*buf == '$') {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "binary protocol unsupported!\n");
+			goto end;
+		}
+
+		if (rtsp_msg && rtsp_msg->parse_state == RTSP_ST_WAIT_BODY) {
+			if (p+len-buf >= rtsp_msg->content_length) {
+				*(buf + rtsp_msg->content_length - 2) = '\0';
+				rtsp_msg->body = switch_core_strdup(pool, buf);
+				p = buf + rtsp_msg->content_length + 1 - 2;
+				if (*p == '\n') {
+					p++;
+					rtsp_msg->parse_state = RTSP_ST_DONE;
+					end = p;
+				} else {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "FixME!\n");
+					break;
+				}
+			} else {
+				p += len;
+				len = buf + RTSP_BUFF_SIZE - p;
+				if (len <= 0) {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "buffer overflow!\n");
+					break;
+				}
+				continue;
+			}
+		} else if ((end = strstr(buf, "\r\n\r\n")) == NULL) {
+			p += len;
+			len = buf + RTSP_BUFF_SIZE - p;
+			if (len <= 0) {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "buffer overflow!\n");
+				break;
+			}
+			continue;
+		} else {
+			*end = '\0';
+			end +=4;
+		}
+
+		rtsp_msg = rtsp_parse(buf, pool);
+
+		switch_assert(rtsp_msg);
+		if (rtsp_msg->parse_state == RTSP_ST_ERROR) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "rtsp parse error!\n");
+			goto end;
+		}
+
+		if (1) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "state:%d, len:%" SWITCH_SIZE_T_FMT "\n", rtsp_msg->parse_state, len);
+		}
+
+		if (rtsp_msg->parse_state == RTSP_ST_WAIT_BODY) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "l: %d\n", rtsp_msg->content_length);
+
+			if (p+len-end >= rtsp_msg->content_length) {
+				p = end + rtsp_msg->content_length - 2;
+				*p = '\0';
+				rtsp_msg->body = switch_core_strdup(pool, end);
+				if (*++p == '\n') {
+					rtsp_msg->parse_state = RTSP_ST_DONE;
+					end = ++p;
+				} else {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "FixME!\n");
+					break;
+				}
+			} else {
+				p += len;
+				len = buf + RTSP_BUFF_SIZE - p;
+				if (len <= 0) {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "buffer overflow!\n");
+					break;
+				}
+				continue;
+			}
+		}
+
+		if (rtsp_msg->parse_state == RTSP_ST_DONE) {
+			switch_size_t msg_len;
+			const char *destination_number = rtsp_msg->path;
+			// char *p;
+			// int remote_video_port = 0;
+
+			if (*destination_number == '/') destination_number++;
+
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "-----%d %s\n", rtsp_msg->method, rtsp_msg->full_path);
+			switch (rtsp_msg->method) {
+				case RTSP_M_TEARDOWN:
+					msg = switch_mprintf("RTSP/1.0 200 OK\r\n"
+						"CSeq: %d\r\n\r\n", rtsp_msg->cseq);
+					assert(msg);
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msg: %s\n", msg);
+
+					msg_len = strlen(msg),
+					switch_socket_send(new_sock, msg, &msg_len);
+					switch_safe_free(msg);
+
+					if (channel && switch_channel_ready(channel)) {
+						switch_channel_hangup(channel, SWITCH_CAUSE_NORMAL_CLEARING);
+					}
+					switch_yield(1000000);
+					break;
+				case RTSP_M_REPLY:
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "cseq: %d, code: %d\n", rtsp_msg->cseq, rtsp_msg->code);
+
+					if (rtsp_msg->cseq == 1 && rtsp_msg->code == 200) {
+						msg = switch_mprintf("DESCRIBE %s RTSP/1.0\r\n"
+							"CSeq: %d\r\n"
+							"User-Agent: FreeSWITCH\r\n"
+							"Accept: application/sdp\r\n\r\n",
+							path, cseq++);
+						assert(msg);
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msg: %s\n", msg);
+
+						msg_len = strlen(msg),
+						switch_socket_send(new_sock, msg, &msg_len);
+						switch_safe_free(msg);
+					} else if (rtsp_msg->cseq == 2 && rtsp_msg->code == 401) {
+						msg = switch_mprintf("DESCRIBE %s RTSP/1.0\r\n"
+							"CSeq: %d\r\n"
+							"User-Agent: FreeSWITCH\r\n"
+							"Authorization: Basic YWRtaW46MTIzNDU=\r\n"
+							"Accept: application/sdp\r\n\r\n",
+							path, cseq++);
+						assert(msg);
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msg: %s\n", msg);
+
+						msg_len = strlen(msg),
+						switch_socket_send(new_sock, msg, &msg_len);
+						switch_safe_free(msg);
+					} else if (rtsp_msg->cseq == 3 && rtsp_msg->code == 200) {
+
+#define IP1 "192.168.0.103"
+						video_rtp_session = video_rtp_session ? video_rtp_session :
+							switch_rtp_new(IP1, //local
+								9998, //local
+								host, //remote
+								9998, //remote
+								96, // pt
+								1,
+								90000,
+								SWITCH_RTP_FLAG_AUTOADJ | SWITCH_RTP_FLAG_DATAWAIT | SWITCH_RTP_FLAG_VIDEO,
+								NULL, &err, pool);
+
+						if (!video_rtp_session) {
+							switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "llllllllllllllllll---------------%s-----!\n", err);
+						}
+
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "body:%s\n", rtsp_msg->body);
+						msg = switch_mprintf("SETUP %s/TrackID=1 RTSP/1.0\r\n"
+							"CSeq: %d\r\n"
+							"User-Agent: FreeSWITCH\r\n"
+							"Authorization: Basic YWRtaW46MTIzNDU=\r\n"
+							"Transport: RTP/AVP;unicast;client_port=9998-9999\r\n\r\n",
+							path, cseq++);
+						assert(msg);
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msg: %s\n", msg);
+						msg_len = strlen(msg),
+						switch_socket_send(new_sock, msg, &msg_len);
+						switch_safe_free(msg);
+					} else if (rtsp_msg->cseq == 4 && rtsp_msg->code == 200) {
+						msg = switch_mprintf("PLAY %s RTSP/1.0\r\n"
+							"CSeq: %d\r\n"
+							"User-Agent: FreeSWITCH\r\n"
+							"Authorization: Basic YWRtaW46MTIzNDU=\r\n"
+							"Session: %s\r\n"
+							"Range: npt=0.000-\r\n\r\n",
+							path, cseq++, rtsp_msg->headers[RTSP_H_SESSION]);
+						assert(msg);
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msg: %s\n", msg);
+						msg_len = strlen(msg),
+						switch_socket_send(new_sock, msg, &msg_len);
+						switch_safe_free(msg);
+					} else {
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "body:%s\n", rtsp_msg->body);
+					}
+					break;
+				default:
+					msg = switch_mprintf("RTSP/1.0 405 Method Not Allowed\r\n"
+						"CSeq: %d\r\n"
+						"Allow: DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE\r\n\r\n",
+						rtsp_msg->cseq);
+					assert(msg);
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "msg: %s\n", msg);
+
+					msg_len = strlen(msg);
+					switch_socket_send(new_sock, msg, &msg_len);
+					switch_safe_free(msg);
+			}
+		}
+
+		bytes_left = buf + len - end;
+
+		if (bytes_left) {
+			memmove(buf, end, bytes_left);
+			len = RTSP_BUFF_SIZE - bytes_left;
+			p = buf + len;
+		} else { /* all buffer parsed */
+			p = buf;
+			len = RTSP_BUFF_SIZE;
+		}
+	}
+
+end:
+	close_socket(&new_sock);
+	while (helper.running) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "waiting thread to stop");
+	}
+	if (video_rtp_session) switch_rtp_destroy(&video_rtp_session);
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "ending play_rtsp\n");
+}
 
 switch_io_routines_t rtsp_io_routines = {
 	/*.outgoing_channel */ NULL,
@@ -1375,7 +1777,7 @@ switch_state_handler_table_t rtsp_event_handlers = {
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_rtsp_load)
 {
-	// switch_application_interface_t *app_interface;
+	switch_application_interface_t *app_interface;
 
 	/* connect my internal structure to the blank pointer passed to me */
 	*module_interface = switch_loadable_module_create_module_interface(pool, modname);
@@ -1385,6 +1787,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_rtsp_load)
 	rtsp_endpoint_interface->state_handler = &rtsp_event_handlers;
 
 	rtsp_init();
+
+	SWITCH_ADD_APP(app_interface, "play_rtsp", "play rtsp audio/videos", "play rtsp audio/videos", play_rtsp_function, "user:pass@<ip>[:<port>][/<path>]", SAF_SUPPORT_NOMEDIA);
 
 	/* indicate that the module should continue to be loaded */
 	return SWITCH_STATUS_SUCCESS;
