@@ -122,6 +122,7 @@ typedef struct {
 	int bridge_early_media;
 	switch_thread_t *ethread;
 	switch_caller_profile_t *caller_profile_override;
+	switch_bool_t check_vars;
 	switch_memory_pool_t *pool;
 } originate_global_t;
 
@@ -997,6 +998,8 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_wait_for_answer(switch_core_session_t
 					switch_core_file_seek(ringback.fh, &pos, 0, SEEK_SET);
 					switch_core_file_read(ringback.fh, write_frame.data, &olen);
 					if (olen == 0) {
+						switch_log_printf(SWITCH_CHANNEL_CHANNEL_LOG(caller_channel), SWITCH_LOG_ERROR, 
+										  "Failure to read or re-read after seeking to beginning on file [%s]\n", ringback.fh->file_path);
 						break;
 					}
 				}
@@ -1202,7 +1205,7 @@ static switch_status_t setup_ringback(originate_global_t *oglobals, originate_st
 									  read_codec->implementation->number_of_channels,
 									  read_codec->implementation->actual_samples_per_second,
 									  SWITCH_FILE_FLAG_READ | SWITCH_FILE_DATA_SHORT, NULL) != SWITCH_STATUS_SUCCESS) {
-				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Error Playing File\n");
+				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(oglobals->session), SWITCH_LOG_ERROR, "Error Playing File\n");
 				switch_safe_free(tmp_data);
 				switch_goto_status(SWITCH_STATUS_GENERR, end);
 				//switch_goto_status(SWITCH_STATUS_FALSE, end);
@@ -1224,12 +1227,12 @@ static switch_status_t setup_ringback(originate_global_t *oglobals, originate_st
 
 			teletone_init_session(&ringback->ts, 0, teletone_handler, ringback);
 			ringback->ts.rate = read_codec->implementation->actual_samples_per_second;
-			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Play Ringback Tone [%s]\n", ringback_data);
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(oglobals->session), SWITCH_LOG_DEBUG, "Play Ringback Tone [%s]\n", ringback_data);
 			/* ringback->ts.debug = 1;
 			   ringback->ts.debug_stream = switch_core_get_console(); */
 
 			if (teletone_run(&ringback->ts, ringback_data)) {
-				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Error Playing Tone\n");
+				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(oglobals->session), SWITCH_LOG_ERROR, "Error Playing Tone\n");
 				teletone_destroy_session(&ringback->ts);
 				switch_buffer_destroy(&ringback->audio_buffer);
 				switch_goto_status(SWITCH_STATUS_GENERR, end);
@@ -1410,7 +1413,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_enterprise_originate(switch_core_sess
 	}
 
 	/* extract channel variables, allowing multiple sets of braces */
-	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Parsing ultra-global variables\n");
+	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "Parsing ultra-global variables\n");
 	while (*data == '<') {
 		char *parsed = NULL;
 
@@ -1762,6 +1765,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 											   caller_profile_override, ovars, flags, cancel_cause);
 	}
 
+	oglobals.check_vars = SWITCH_TRUE;
 	oglobals.ringback_ok = 1;
 	oglobals.bridge_early_media = -1;
 	oglobals.file = NULL;
@@ -1880,8 +1884,14 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 		data++;
 	}
 
+	if ((ovars && switch_true(switch_event_get_header(ovars,"origination_nested_vars"))) || 
+		(caller_channel && switch_true(switch_channel_get_variable(caller_channel, "origination_nested_vars"))) 
+		|| switch_true(switch_core_get_variable("origination_nested_vars")) || switch_stristr("origination_nested_vars=true", data)) {
+		oglobals.check_vars = SWITCH_FALSE;
+	}
+
 	/* extract channel variables, allowing multiple sets of braces */
-	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Parsing global variables\n");
+	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "Parsing global variables\n");
 	while (*data == '{') {
 		char *parsed = NULL;
 
@@ -1930,6 +1940,8 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 				if (!strcasecmp((char *) hi->name, "group_confirm_key")) {
 					ok = 1;
 				} else if (!strcasecmp((char *) hi->name, "group_confirm_file")) {
+					ok = 1;
+				} else if (!strcasecmp((char *) hi->name, "group_confirm_read_timeout")) {
 					ok = 1;
 				} else if (!strcasecmp((char *) hi->name, "group_confirm_cancel_timeout")) {
 					ok = 1;
@@ -2296,7 +2308,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 				
 				if (*chan_type == '[') {
 					switch_event_create_plain(&local_var_event, SWITCH_EVENT_CHANNEL_DATA);
-					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Parsing session specific variables\n");
+					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "Parsing session specific variables\n");
 				}
 
 				while (*chan_type == '[') {
@@ -2506,7 +2518,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 						switch_event_header_t *header;
 						/* install the vars from the {} params */
 						for (header = var_event->headers; header; header = header->next) {
-							switch_channel_set_variable(originate_status[i].peer_channel, header->name, header->value);
+							switch_channel_set_variable_var_check(originate_status[i].peer_channel, header->name, header->value, oglobals.check_vars);
 						}
 					}
 				}
@@ -2515,7 +2527,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 				if (local_var_event) {
 					switch_event_header_t *header;
 					for (header = local_var_event->headers; header; header = header->next) {
-						switch_channel_set_variable(originate_status[i].peer_channel, header->name, header->value);
+						switch_channel_set_variable_var_check(originate_status[i].peer_channel, header->name, header->value, oglobals.check_vars);
 					}
 					switch_event_destroy(&local_var_event);
 				}
@@ -2525,7 +2537,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 						switch_event_header_t *header;
 						/* install the vars from the {} params */
 						for (header = var_event->headers; header; header = header->next) {
-							switch_channel_set_variable(originate_status[i].peer_channel, header->name, header->value);
+							switch_channel_set_variable_var_check(originate_status[i].peer_channel, header->name, header->value, oglobals.check_vars);
 						}
 					}
 				}
@@ -3508,6 +3520,8 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 	if (*bleg) {
 		switch_channel_t *bchan = switch_core_session_get_channel(*bleg);
 
+		
+
 		if (session && caller_channel) {
 			switch_caller_profile_t *cloned_profile, *peer_profile = switch_channel_get_caller_profile(switch_core_session_get_channel(*bleg));
 
@@ -3518,6 +3532,8 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 			}
 
 			switch_channel_set_variable(caller_channel, SWITCH_SIGNAL_BOND_VARIABLE, switch_core_session_get_uuid(*bleg));
+			// Now main SWITCH_SIGNAL_BOND_VARIABLE is populated, don't need this one anymore...
+			switch_channel_set_variable(caller_channel, "originate_signal_bond", NULL);
 		}
 		
 
@@ -3525,8 +3541,11 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 			switch_cond_next();
 		}
 
+		switch_channel_audio_sync(bchan);
 
-		switch_ivr_sleep(*bleg, 0, SWITCH_TRUE, NULL);
+		if (caller_channel) {
+			switch_channel_audio_sync(caller_channel);
+		}
 	}
 
 	if (oglobals.session) {

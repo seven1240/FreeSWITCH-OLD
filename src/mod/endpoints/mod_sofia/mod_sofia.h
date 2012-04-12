@@ -267,6 +267,7 @@ typedef enum {
 	PFLAG_SHUTDOWN,
 	PFLAG_PRESENCE_MAP,
 	PFLAG_OPTIONS_RESPOND_503_ON_BUSY,
+	PFLAG_PRESENCE_DISABLE_EARLY,
 	/* No new flags below this line */
 	PFLAG_MAX
 } PFLAGS;
@@ -520,6 +521,13 @@ typedef enum {
 	MEDIA_OPT_BYPASS_AFTER_ATT_XFER = (1 << 1)
 } sofia_media_options_t;
 
+typedef enum {
+       PAID_DEFAULT = 0,
+       PAID_USER,
+       PAID_USER_DOMAIN,
+       PAID_VERBATIM
+} sofia_paid_type_t;
+
 #define MAX_RTPIP 50
 
 struct sofia_profile {
@@ -657,6 +665,7 @@ struct sofia_profile {
 	uint32_t sip_force_expires;
 	uint32_t sip_expires_max_deviation;
 	int ireg_seconds;
+	sofia_paid_type_t paid_type;
 };
 
 struct private_object {
@@ -1130,6 +1139,7 @@ switch_status_t sofia_glue_send_notify(sofia_profile_t *profile, const char *use
 									   const char *body, const char *o_contact, const char *network_ip);
 char *sofia_glue_get_extra_headers(switch_channel_t *channel, const char *prefix);
 void sofia_glue_set_extra_headers(switch_core_session_t *session, sip_t const *sip, const char *prefix);
+char *sofia_glue_get_extra_headers_from_event(switch_event_t *event, const char *prefix);
 void sofia_info_send_sipfrag(switch_core_session_t *aleg, switch_core_session_t *bleg);
 void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *profile, sip_t const *sip, switch_bool_t send);
 void sofia_send_callee_id(switch_core_session_t *session, const char *name, const char *number);
@@ -1163,3 +1173,4 @@ void sofia_glue_pause_jitterbuffer(switch_core_session_t *session, switch_bool_t
 void sofia_process_dispatch_event(sofia_dispatch_event_t **dep);
 char *sofia_glue_get_host(const char *str, switch_memory_pool_t *pool);
 void sofia_presence_check_subscriptions(sofia_profile_t *profile, time_t now);
+void sofia_msg_thread_start(int idx);
