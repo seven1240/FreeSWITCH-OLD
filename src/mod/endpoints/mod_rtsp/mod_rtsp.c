@@ -703,7 +703,7 @@ switch_status_t rtsp_init()
 	globals.sock = sock;
 
 	switch_threadattr_create(&thd_attr, pool);
-	// switch_threadattr_detach_set(thd_attr, 1);
+	switch_threadattr_detach_set(thd_attr, 1);
 	switch_threadattr_stacksize_set(thd_attr, SWITCH_THREAD_STACKSIZE);
 	switch_thread_create(&thread, thd_attr, rtsp_listener, sock, pool);
 
@@ -1398,7 +1398,30 @@ static void *SWITCH_THREAD_FUNC channel_loop(switch_thread_t *thread, void *obj)
 
 		status = switch_rtp_zerocopy_read_frame(video_rtp_session, &frame, SWITCH_IO_FLAG_NONE);
 
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "framelen: %d\n", frame.datalen);
+		if (switch_channel_test_flag(channel, CF_BREAK)) {
+			switch_channel_clear_flag(channel, CF_BREAK);
+			break;
+		}
+
+		switch_ivr_parse_all_events(session);
+
+		{
+			uint8_t nri;
+			uint8_t fragment_type;
+			uint8_t nal_type;
+			uint8_t start_bit;
+			uint8_t *hdr;
+			
+			hdr           = frame.data;
+			nri           = hdr[0] & 0x60;
+			fragment_type = hdr[0] & 0x1f;
+			nal_type      = hdr[1] & 0x1f;
+			start_bit     = hdr[1] & 0x80;
+
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+				"%x %x | ft: %d, nt: %d, sb: %d len: %d m: %d ts: %ld\n",
+				hdr[0], hdr[1], fragment_type, nal_type, start_bit, frame.datalen, frame.m, frame.timestamp);
+		}
 
 		if (!SWITCH_READ_ACCEPTABLE(status)) {
 			break;
