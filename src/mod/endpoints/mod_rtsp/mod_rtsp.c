@@ -363,7 +363,7 @@ static switch_status_t rtsp_read_video_frame(switch_core_session_t *session, swi
 	//
 	// 	rtsp_clear_flag_locked(tech_pvt, TFLAG_READING);
 	// 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "reading frame %d\n", stream_id);
-
+	switch_yield(1000000);
 	*frame = &tech_pvt->read_frame;
 	return SWITCH_STATUS_BREAK;
 }
@@ -483,7 +483,7 @@ switch_status_t rtsp_tech_codec(switch_core_session_t *session) {
 
 	if (switch_core_codec_init(&tech_pvt->video_write_codec,
 			"H264", //tech_pvt->video_rm_encoding,
-			"packetization-mode=1;profile-level-id=42E01F;sprop-parameter-sets=J0LgH5ZUCg/QgAATiAAEk+BC,KM4GDMg=", //tech_pvt->video_rm_fmtp,
+			NULL,//"packetization-mode=1;profile-level-id=42E01F;sprop-parameter-sets=J0LgH5ZUCg/QgAATiAAEk+BC,KM4GDMg=", //tech_pvt->video_rm_fmtp,
 			90000, //tech_pvt->video_rm_rate,
 			0,
 			1,
@@ -523,6 +523,7 @@ switch_status_t rtsp_new_channel(switch_core_session_t **new_session, int remote
 	private_object_t *tech_pvt = NULL;
 	switch_status_t status;
 	const char *err;
+	const char *ip;
 
 	if (rtsp_endpoint_interface) {
 		session = switch_core_session_request(rtsp_endpoint_interface, SWITCH_CALL_DIRECTION_INBOUND, SOF_NONE, NULL);
@@ -572,11 +573,16 @@ switch_status_t rtsp_new_channel(switch_core_session_t **new_session, int remote
 		return status;
 	}
 
-#define IPX "192.168.0.173"
+	ip = switch_core_get_variable("local_ip_v4");
+	if (zstr(ip)) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "no local_ip_v4?\n");
+		ip = "127.0.0.1";
+	}
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "send to ip:port %s:%d=============================\n", ip, remote_video_rtp_port);
 
-	tech_pvt->rtp_session = switch_rtp_new(IPX, //local
+	tech_pvt->rtp_session = switch_rtp_new(ip, //local
 		6668, //local
-		IPX, //remote
+		ip, //remote
 		4440, //remote
 		0, // pt
 		1,
@@ -589,9 +595,9 @@ switch_status_t rtsp_new_channel(switch_core_session_t **new_session, int remote
 		return SWITCH_STATUS_FALSE;
 	}
 
-	tech_pvt->video_rtp_session = switch_rtp_new(IPX, //local
+	tech_pvt->video_rtp_session = switch_rtp_new(ip, //local
 		6666, //local
-		IPX, //remote
+		ip, //remote
 		remote_video_rtp_port, //remote
 		96, // pt
 		1,
@@ -605,6 +611,7 @@ switch_status_t rtsp_new_channel(switch_core_session_t **new_session, int remote
 	}
 
 	rtsp_set_flag(tech_pvt, TFLAG_IO);
+	rtsp_set_flag(tech_pvt, TFLAG_RTP);
 
 	switch_rtp_activate_rtcp(tech_pvt->rtp_session, 1000, 4441);
 	switch_rtp_activate_rtcp(tech_pvt->video_rtp_session, 1000, remote_video_rtp_port + 1);
@@ -929,6 +936,7 @@ static void *SWITCH_THREAD_FUNC rtsp_worker(switch_thread_t *thread, void *obj)
 	rtsp_msg_t *rtsp_msg = NULL;
 	char *msg = NULL;
 	switch_size_t msg_len;
+	char *ip = switch_core_get_variable("local_ip_v4");
 
 	switch_core_session_t *session = NULL;
 	switch_channel_t *channel = NULL;
@@ -1009,13 +1017,13 @@ static void *SWITCH_THREAD_FUNC rtsp_worker(switch_thread_t *thread, void *obj)
 				case RTSP_M_DESCRIBE:
 
 					sdp = switch_mprintf("v=0\r\n"
-						"o=- FS 1 IN IP4 192.168.2.106\r\n"
+						"o=- FS 1 IN IP4 %s\r\n"
 						"s=Session streamed by FS\r\n"
 						"i=test.264\r\n"
 						"t=0 0\r\n"
 						"a=tool:FS Streaming Media\r\n"
 						"a=range:npt=0\r\n"
-						"m=video 4444 RTP/AVP 96\r\n"
+						"m=video 0 RTP/AVP 96\r\n"
 						// "a=rtpmap:34 H263/90000\r\n"
 						// "a=fmtp:34 QCIF=1;CIF=1;VGA=1\r\n"
 						// "a=rtpmap:115 H263-1998/90000\r\n"
@@ -1027,7 +1035,7 @@ static void *SWITCH_THREAD_FUNC rtsp_worker(switch_thread_t *thread, void *obj)
 						// "m=audio 4440 RTP/AVP 0\r\n"
 						// "a=rtpmap:0 PCMU\r\n"
 						// "a=control:trackID=1\r\n"
-						"\r\n");
+						"\r\n", ip);
 					assert(sdp);
 					sdp_len = strlen(sdp);
 
