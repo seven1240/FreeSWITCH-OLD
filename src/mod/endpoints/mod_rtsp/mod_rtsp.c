@@ -260,6 +260,14 @@ switch_status_t rtsp_on_destroy(switch_core_session_t *session)
 
 	if (tech_pvt) {
 
+		if (tech_pvt->local_sdp_audio_port) {
+			switch_rtp_release_port(tech_pvt->local_sdp_audio_ip, tech_pvt->local_sdp_audio_port);
+		}
+
+		if (tech_pvt->local_sdp_video_port) {
+			switch_rtp_release_port(tech_pvt->local_sdp_audio_ip, tech_pvt->local_sdp_video_port);
+		}
+
 		if (switch_core_codec_ready(&tech_pvt->read_codec)) {
 			switch_core_codec_destroy(&tech_pvt->read_codec);
 		}
@@ -580,8 +588,22 @@ switch_status_t rtsp_new_channel(switch_core_session_t **new_session, int remote
 	}
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "send to ip:port %s:%d=============================\n", ip, remote_video_rtp_port);
 
+	tech_pvt->local_sdp_audio_ip = switch_core_session_strdup(session, ip);
+
+	/* Request a local port from the core's allocator */
+	if (!(tech_pvt->local_sdp_audio_port = switch_rtp_request_port(ip))) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(tech_pvt->session), SWITCH_LOG_CRIT, "No RTP ports available!\n");
+		return SWITCH_STATUS_FALSE;
+	}
+
+	if (!(tech_pvt->local_sdp_video_port = switch_rtp_request_port(ip))) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(tech_pvt->session), SWITCH_LOG_CRIT, "No RTP ports available!\n");
+		switch_rtp_release_port(ip, tech_pvt->local_sdp_audio_port);
+		return SWITCH_STATUS_FALSE;
+	}
+
 	tech_pvt->rtp_session = switch_rtp_new(ip, //local
-		6668, //local
+		tech_pvt->local_sdp_audio_port, //local
 		ip, //remote
 		4440, //remote
 		0, // pt
@@ -596,7 +618,7 @@ switch_status_t rtsp_new_channel(switch_core_session_t **new_session, int remote
 	}
 
 	tech_pvt->video_rtp_session = switch_rtp_new(ip, //local
-		6666, //local
+		tech_pvt->local_sdp_video_port, //local
 		ip, //remote
 		remote_video_rtp_port, //remote
 		96, // pt
