@@ -1442,7 +1442,7 @@ static void *SWITCH_THREAD_FUNC channel_loop(switch_thread_t *thread, void *obj)
 			uint8_t nal_type;
 			uint8_t start_bit;
 			uint8_t *hdr;
-			
+
 			hdr           = frame.data;
 			nri           = hdr[0] & 0x60;
 			fragment_type = hdr[0] & 0x1f;
