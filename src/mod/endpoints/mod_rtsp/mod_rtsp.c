@@ -482,8 +482,8 @@ switch_status_t rtsp_tech_codec(switch_core_session_t *session) {
 	switch_core_session_set_read_codec(session, &tech_pvt->read_codec);
 
 	if (switch_core_codec_init(&tech_pvt->video_write_codec,
-			"H264", //tech_pvt->video_rm_encoding,
-			NULL,//"packetization-mode=1;profile-level-id=42E01F;sprop-parameter-sets=J0LgH5ZUCg/QgAATiAAEk+BC,KM4GDMg=", //tech_pvt->video_rm_fmtp,
+			"H264",
+			NULL,
 			90000, //tech_pvt->video_rm_rate,
 			0,
 			1,
@@ -509,7 +509,7 @@ switch_status_t rtsp_tech_codec(switch_core_session_t *session) {
 		switch_channel_set_flag(channel, CF_VIDEO);
 
 		switch_channel_set_variable(channel, "rtsp_use_video_codec_name", "H264");
-		switch_channel_set_variable(channel, "rtsp_use_video_codec_fmtp", "packetization-mode=1;profile-level-id=42E01F;sprop-parameter-sets=J0LgH5ZUCg/QgAATiAAEk+BC,KM4GDMg=");
+		// switch_channel_set_variable(channel, "rtsp_use_video_codec_fmtp", "packetization-mode=1;profile-level-id=42E01F;sprop-parameter-sets=J0LgH5ZUCg/QgAATiAAEk+BC,KM4GDMg=");
 		switch_channel_set_variable_printf(channel, "rtsp_use_video_codec_rate", "%d", 90000);
 		switch_channel_set_variable_printf(channel, "rtsp_use_video_codec_ptime", "%d", 0);
 	}
@@ -1030,7 +1030,8 @@ static void *SWITCH_THREAD_FUNC rtsp_worker(switch_thread_t *thread, void *obj)
 						// "a=fmtp:115 QCIF=1;CIF=1;VGA=1;I=1;J=1;T=1\r\n"
 						// "c=IN IP4 192.168.0.75\r\n"
 						"a=rtpmap:96 H264/90000\r\n"
-						"a=fmtp:96 packetization-mode=1;profile-level-id=42E01F;sprop-parameter-sets=J0LgH5ZUCg/QgAATiAAEk+BC,KM4GDMg=\r\n"
+						// "a=fmtp:96 packetization-mode=1;profile-level-id=42E01F;sprop-parameter-sets=J0LgH5ZUCg/QgAATiAAEk+BC,KM4GDMg=\r\n"
+						"a=fmtp:96 profile-level-id=42801f;packetization-mode=0;level-asymmetry-allowed=1\r\n"
 						"a=control:trackID=0\r\n"
 						// "m=audio 4440 RTP/AVP 0\r\n"
 						// "a=rtpmap:0 PCMU\r\n"
