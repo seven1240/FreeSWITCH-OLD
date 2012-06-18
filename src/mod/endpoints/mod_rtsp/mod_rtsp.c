@@ -30,6 +30,7 @@
  */
 #include <switch.h>
 
+#define IP1 "192.168.1.2"
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_rtsp_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_rtsp_shutdown);
@@ -1175,7 +1176,7 @@ static void *SWITCH_THREAD_FUNC rtsp_worker(switch_thread_t *thread, void *obj)
 end:
 
 	if (!zstr(uuid)) {
-		msg = switch_mprintf("TEARDOWN rtsp://192.168.0.173:8554/track1 RTSP/1.0\r\n"
+		msg = switch_mprintf("TEARDOWN " IP1 ":8554/track1 RTSP/1.0\r\n"
 			"CSeq: %d\r\n"
 			"Session: %s\r\n",
 			rtsp_msg->cseq, uuid);
@@ -1720,7 +1721,6 @@ SWITCH_STANDARD_APP(play_rtsp_function)
 						switch_safe_free(msg);
 					} else if (rtsp_msg->cseq == 3 && rtsp_msg->code == 200) {
 
-#define IP1 "192.168.0.103"
 						video_rtp_session = video_rtp_session ? video_rtp_session :
 							switch_rtp_new(IP1, //local
 								9998, //local
